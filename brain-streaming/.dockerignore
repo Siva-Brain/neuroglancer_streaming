@@ -1,0 +1,10 @@
+# build context = brain-streaming/ ; keep it tiny and reproducible
+**/__pycache__/
+*.py[cod]
+server/.venv/
+server/.cuda_home/
+*.log
+*.bin
+# the server image doesn't need the Unity project or VCS metadata
+unity/
+.git/

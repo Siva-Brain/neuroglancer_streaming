@@ -147,14 +147,38 @@ that reads Zarr, and only meshes cross the network.
    and add Draco-encoded payloads (content-negotiated), so chunk sizes stay
    small as real resolution grows.
 
-## Optional: Docker
+## Docker
 
-Not required. If you want it:
+Runs the multi-block real-Zarr server (`app_zarr.py`) — all 5 block slabs plus
+the WebGL client at `/`. Build context is `brain-streaming/`.
 
 ```bash
 # from brain-streaming/
-docker build -t brain-server -f server/Dockerfile .
-docker run --rm -p 8000:8000 brain-server --chunk-delay-ms 120
+docker compose up --build            # CPU, http://<host>:8010/
 ```
 
-(See docs/dgx-setup.md for the Dockerfile.)
+Or plain Docker:
+
+```bash
+docker build -t brain-streaming -f server/Dockerfile .
+docker run --rm -p 8010:8010 brain-streaming
+```
+
+Append flags to override the defaults (they pass straight to `app_zarr.py`):
+
+```bash
+docker run --rm -p 8010:8010 brain-streaming --min-level 4 --voxel-um 20,0.5,0.5 \
+    --zarr http://3dstrokeviewer.humanbrain.in:8056/zarr_files/580_ALL_3d.zarr \
+    --zarr http://3dstrokeviewer.humanbrain.in:8056/zarr_files/584_ALL_3d.zarr
+```
+
+**A100 / GPU** (needs the NVIDIA Container Toolkit on the host):
+
+```bash
+docker build -t brain-streaming:gpu -f server/Dockerfile.gpu .
+docker run --rm --gpus all -p 8010:8010 brain-streaming:gpu
+# or: docker compose --profile gpu up --build brain-gpu
+```
+
+The CPU image falls back to NumPy; the GPU image falls back to CPU if no GPU is
+present. `PORT` and `MIN_LEVEL` env vars are honored by compose.

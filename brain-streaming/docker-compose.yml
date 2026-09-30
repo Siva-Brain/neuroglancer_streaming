@@ -1,0 +1,37 @@
+# Multi-block brain streaming server.
+#
+#   docker compose up --build            # CPU (default)
+#   docker compose --profile gpu up --build brain-gpu   # A100 / CuPy
+#
+# Override the port / streamed levels / voxel size / blocks via the env vars
+# below or by editing `command`.
+services:
+  brain:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: brain-streaming
+    ports:
+      - "${PORT:-8010}:8010"
+    command: ["--no-gpu", "--min-level", "${MIN_LEVEL:-3}"]
+    restart: unless-stopped
+
+  # A100 / CuPy variant. Needs the NVIDIA Container Toolkit on the host.
+  # Enable with:  docker compose --profile gpu up --build brain-gpu
+  brain-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: server/Dockerfile.gpu
+    image: brain-streaming:gpu
+    ports:
+      - "${PORT:-8010}:8010"
+    command: ["--min-level", "${MIN_LEVEL:-3}"]
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: ["gpu"]
