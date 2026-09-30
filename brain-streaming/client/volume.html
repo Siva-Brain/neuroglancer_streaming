@@ -1,0 +1,540 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain Volume Stream</title>
+<style>
+  :root { color-scheme: dark; }
+  html,body { margin:0; height:100%; background:#05070c; overflow:hidden;
+              font:12px/1.5 ui-monospace,Menlo,Consolas,monospace; color:#dfe6f0; }
+  #gl { position:fixed; inset:0; display:block; width:100%; height:100%; }
+  #hud { position:fixed; top:10px; left:10px; width:230px; padding:10px 12px;
+         background:rgba(10,14,22,.82); border:1px solid #223049; border-radius:9px;
+         backdrop-filter:blur(6px); pointer-events:none; white-space:pre; }
+  #hud h1 { font-size:11px; margin:0 0 7px; color:#8fb4ff; letter-spacing:.4px; }
+  .r{display:flex;justify-content:space-between}.k{color:#8794ab}.v{color:#eaf1ff}
+  hr{border:0;border-top:1px solid #223049;margin:6px 0}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px}
+  .ok{background:#39d98a}.bad{background:#ff5c5c}.wait{background:#f5c451}
+  #hint{position:fixed;bottom:10px;left:10px;color:#5f6b82}
+
+  /* ---- block control panel (right side) ---- */
+  #panel{position:fixed; top:10px; right:10px; width:300px; max-height:calc(100vh - 20px);
+         overflow-y:auto; padding:10px 12px; background:rgba(10,14,22,.9);
+         border:1px solid #223049; border-radius:9px; backdrop-filter:blur(6px);}
+  #panel h1{font-size:11px; margin:0 0 8px; color:#8fb4ff; letter-spacing:.4px;
+            display:flex; justify-content:space-between; align-items:center;}
+  #panel .tools{display:flex; gap:6px; margin-bottom:8px;}
+  button{font:inherit; color:#cfe0ff; background:#16233a; border:1px solid #2c405e;
+         border-radius:6px; padding:3px 8px; cursor:pointer;}
+  button:hover{background:#1d2f4c;}
+  .blk{border:1px solid #223049; border-radius:8px; padding:8px; margin-bottom:8px;}
+  .blk.hidden{opacity:.5;}
+  .blkhead{display:flex; align-items:center; gap:7px; margin-bottom:6px;}
+  .sw{width:11px; height:11px; border-radius:3px; flex:0 0 auto;}
+  .blkhead .nm{font-weight:600; color:#eaf1ff;}
+  .blkhead .ex{color:#6f7d95; font-size:10px; margin-left:auto;}
+  .grp{margin:5px 0 2px; color:#8fb4ff; font-size:10px; letter-spacing:.3px;}
+  .axes{display:grid; grid-template-columns:14px 1fr 14px 1fr 14px 1fr; gap:3px 4px;
+        align-items:center;}
+  .axes label{color:#8794ab; text-align:right;}
+  .axes input{width:100%; box-sizing:border-box; font:inherit; color:#eaf1ff;
+              background:#0d1524; border:1px solid #263650; border-radius:5px;
+              padding:2px 4px;}
+  .axes input:focus{outline:none; border-color:#3f5f8f;}
+  .blk .row2{display:flex; gap:6px; margin-top:6px;}
+  .blk .row2 button{flex:1; font-size:10px; padding:2px 4px;}
+  .toggle{margin-left:auto; display:flex; align-items:center; gap:5px; color:#8794ab;}
+  #panel::-webkit-scrollbar{width:8px;}
+  #panel::-webkit-scrollbar-thumb{background:#233046; border-radius:4px;}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="hud">
+  <h1>DGX BRAIN VOLUME</h1>
+  <div class="r"><span class="k">Connection</span><span class="v" id="conn"><span class="dot wait"></span>…</span></div>
+  <div class="r"><span class="k">Server</span><span class="v" id="server">—</span></div>
+  <hr>
+  <div class="r"><span class="k">Blocks</span><span class="v" id="nblk">0</span></div>
+  <div class="r"><span class="k">Network</span><span class="v" id="mbps">0.0 MB/s</span></div>
+  <div class="r"><span class="k">Bytes down</span><span class="v" id="bytes">0 B</span></div>
+  <hr>
+  <div class="r"><span class="k">Requested</span><span class="v" id="req">0</span></div>
+  <div class="r"><span class="k">Received</span><span class="v" id="recv">0</span></div>
+  <div class="r"><span class="k">Bricks</span><span class="v" id="cached">0</span></div>
+  <div class="r"><span class="k">Pending</span><span class="v" id="pend">0</span></div>
+  <div class="r"><span class="k">Active</span><span class="v" id="act">0</span></div>
+  <hr>
+  <div class="r"><span class="k">FPS</span><span class="v" id="fps">0</span></div>
+</div>
+
+<div id="panel">
+  <h1>BLOCKS <span id="pcount" style="color:#6f7d95;font-weight:400"></span></h1>
+  <div class="tools">
+    <button id="btnReset">Reset all</button>
+    <button id="btnCopy">Copy JSON</button>
+    <button id="btnFit">Fit view</button>
+  </div>
+  <div id="blocks"></div>
+</div>
+
+<div id="hint">drag = orbit · scroll = zoom &nbsp;|&nbsp; edit each block's transform · toggle visibility · positions auto-save</div>
+
+<script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
+<script>
+const {mat4, mat3, vec3} = glMatrix;
+const API = location.origin;
+const MAX_CONCURRENCY = 6;               // global across all blocks
+const CHANNELS = "0,3";                  // grayscale + tissue mask (RG8)
+const LS_KEY = "brain-block-transforms-v1";
+
+// distinct-ish tints so overlapping blocks stay tellable apart
+const PALETTE = [
+  [0.60,0.78,1.00],[1.00,0.82,0.58],[0.66,1.00,0.78],
+  [1.00,0.70,0.80],[0.82,0.74,1.00],[0.72,0.95,1.00],[1.00,0.92,0.62],
+];
+
+// ---------- WebGL2 setup ----------
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", {premultipliedAlpha:true, antialias:true});
+if (!gl) { document.getElementById("conn").innerHTML='<span class="dot bad"></span>NO WEBGL2'; }
+
+const VERT = `#version 300 es
+layout(location=0) in vec3 aPos;             // unit cube [0,1]^3
+uniform mat4 uViewProj, uModel;
+out vec3 vLocal;
+void main(){ vLocal = aPos; gl_Position = uViewProj * uModel * vec4(aPos,1.0); }`;
+
+// Ray-march happens in the brick's LOCAL unit-cube space, so any affine block
+// transform (translation / rotation / non-uniform scale) is handled for free:
+// the camera is pushed into local space (uCamLocal) and the box is [0,1]^3.
+const FRAG = `#version 300 es
+precision highp float; precision highp sampler3D;
+in vec3 vLocal; out vec4 frag;
+uniform vec3 uCamLocal, uTint; uniform sampler3D uVol;
+uniform float uAlpha; uniform int uSteps;
+vec2 hitBox01(vec3 o, vec3 d){
+  vec3 inv=1.0/d; vec3 t0=(vec3(0.0)-o)*inv, t1=(vec3(1.0)-o)*inv;
+  vec3 tn=min(t0,t1), tf=max(t0,t1);
+  return vec2(max(max(tn.x,tn.y),tn.z), min(min(tf.x,tf.y),tf.z));
+}
+void main(){
+  vec3 d=normalize(vLocal-uCamLocal);
+  vec2 t=hitBox01(uCamLocal,d); t.x=max(t.x,0.0);
+  if(t.y<=t.x){ discard; }
+  float span=t.y-t.x; int N=uSteps; float dt=span/float(N);
+  vec3 outC=vec3(0.0); float outA=0.0;
+  for(int i=0;i<256;i++){
+    if(i>=N) break;
+    vec3 p=uCamLocal+d*(t.x+(float(i)+0.5)*dt);
+    vec2 s=texture(uVol,p).rg;                  // r=gray, g=mask
+    float tissue=1.0-s.r;                        // dark tissue on light bg
+    float dens=s.g*tissue;
+    if(dens>0.02){
+      float a=clamp(dens*uAlpha*dt*40.0,0.0,1.0);
+      vec3 col=mix(vec3(0.55,0.62,0.78), vec3(0.98), tissue); // cool→white
+      col*=uTint;                                // per-block hue
+      outC += (1.0-outA)*a*col;
+      outA += (1.0-outA)*a;
+      if(outA>0.985) break;
+    }
+  }
+  frag=vec4(outC,outA);                          // premultiplied
+}`;
+
+function sh(type,src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) console.error(gl.getShaderInfoLog(s)); return s; }
+const prog = gl.createProgram();
+gl.attachShader(prog,sh(gl.VERTEX_SHADER,VERT)); gl.attachShader(prog,sh(gl.FRAGMENT_SHADER,FRAG));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
+const U = n => gl.getUniformLocation(prog,n);
+const loc = {vp:U("uViewProj"),model:U("uModel"),camL:U("uCamLocal"),tint:U("uTint"),
+             vol:U("uVol"),alpha:U("uAlpha"),steps:U("uSteps")};
+
+// unit cube [0,1]^3 (triangles)
+const cube = new Float32Array([
+ 0,0,0, 1,0,0, 1,1,0, 0,0,0, 1,1,0, 0,1,0,   0,0,1, 1,1,1, 1,0,1, 0,0,1, 0,1,1, 1,1,1,
+ 0,0,0, 0,1,0, 0,1,1, 0,0,0, 0,1,1, 0,0,1,   1,0,0, 1,0,1, 1,1,1, 1,0,0, 1,1,1, 1,1,0,
+ 0,0,0, 0,0,1, 1,0,1, 0,0,0, 1,0,1, 1,0,0,   0,1,0, 1,1,0, 1,1,1, 0,1,0, 1,1,1, 0,1,1]);
+const vao=gl.createVertexArray(); gl.bindVertexArray(vao);
+const vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo); gl.bufferData(gl.ARRAY_BUFFER,cube,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+
+// ---------- app state ----------
+const S = {
+  blocks:new Map(),                     // id -> Block
+  order:[],
+  inflight:new Set(),                   // "id|zi@level" global
+  requested:0, received:0, bytes:0,
+  bytesWin:0, winT:performance.now(), mbps:0,
+};
+// Block = { id, info, extentMm:[z,y,x], levelVox:{}, nBricks, tint:[r,g,b],
+//           visible:bool, transform:{t,r,s},
+//           bricks:Map(zi->{level,tex,bmin,bmax,center}), have:Set, queue:[],
+//           matrix:mat4, matrixInv:mat4 }
+
+function fmt(n){return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(2)+" MB";}
+
+// ---------- transforms ----------
+const D2R = Math.PI/180;
+function recompute(blk){
+  const {t,r,s}=blk.transform;
+  const m=mat4.create();
+  mat4.translate(m,m,t);
+  mat4.rotateZ(m,m,r[2]*D2R); mat4.rotateY(m,m,r[1]*D2R); mat4.rotateX(m,m,r[0]*D2R);
+  mat4.scale(m,m,s);
+  blk.matrix=m; blk.matrixInv=mat4.invert(mat4.create(),m)||mat4.create();
+}
+function saveTransforms(){
+  const o={};
+  for(const b of S.blocks.values())
+    o[b.id]={t:b.transform.t, r:b.transform.r, s:b.transform.s, visible:b.visible};
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(o)); }catch(e){}
+}
+function loadSaved(){
+  try{ return JSON.parse(localStorage.getItem(LS_KEY)||"null")||{}; }catch(e){ return {}; }
+}
+
+// ---------- networking ----------
+async function getInfo(){ return (await fetch(`${API}/api/dataset/info`)).json(); }
+async function postView(blk,cam){
+  const r=await fetch(`${API}/api/view`,{method:"POST",headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({...cam, block:blk.id})}); return r.json();
+}
+function parseBrick(buf){                               // BVX2: local bbox baked in
+  const dv=new DataView(buf);
+  const level=dv.getUint8(4), nch=dv.getUint8(5);
+  const z0=dv.getInt32(8,true), y0=dv.getInt32(12,true), x0=dv.getInt32(16,true);
+  const dz=dv.getUint16(20,true), dy=dv.getUint16(22,true), dx=dv.getUint16(24,true);
+  const bmin=[dv.getFloat32(26,true),dv.getFloat32(30,true),dv.getFloat32(34,true)];
+  const bmax=[dv.getFloat32(38,true),dv.getFloat32(42,true),dv.getFloat32(46,true)];
+  const vox=new Uint8Array(buf,50,dz*dy*dx*nch);       // dims may be GPU-downsampled
+  return {level,nch,z0,y0,x0,dz,dy,dx,bmin,bmax,vox};
+}
+function upload3D(b){
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D,tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8,b.dx,b.dy,b.dz,0,gl.RG,gl.UNSIGNED_BYTE,b.vox);
+  return tex;
+}
+
+// ---------- cache / global pump ----------
+function enqueue(blk,zi,level,prio){
+  const k=`${zi}@${level}`, gk=`${blk.id}|${k}`;
+  if(blk.have.has(k)||S.inflight.has(gk)) return;
+  const cur=blk.bricks.get(zi);
+  if(cur && cur.level<=level) return;                  // already same/finer
+  const ex=blk.queue.find(q=>q.zi===zi);
+  if(ex){ if(level<ex.level){ex.level=level;} ex.prio=Math.min(ex.prio,prio); return; }
+  blk.queue.push({zi,level,prio});
+}
+function pump(){
+  // gather queued candidates across all visible blocks, dispatch by priority
+  while(S.inflight.size<MAX_CONCURRENCY){
+    let best=null;
+    for(const blk of S.blocks.values()){
+      if(!blk.visible||!blk.queue.length) continue;
+      blk.queue.sort((a,b)=>a.prio-b.prio);
+      const c=blk.queue[0];
+      if(!best||c.prio<best.item.prio) best={blk,item:c};
+    }
+    if(!best) break;
+    best.blk.queue.shift();
+    const {zi,level}=best.item, k=`${zi}@${level}`, gk=`${best.blk.id}|${k}`;
+    if(best.blk.have.has(k)||S.inflight.has(gk)) continue;
+    fetchBrick(best.blk,zi,level,k,gk);
+  }
+}
+async function fetchBrick(blk,zi,level,k,gk){
+  S.inflight.add(gk); S.requested++;
+  const cid=`L${level}.${zi}.0.0.0`;
+  try{
+    const res=await fetch(`${API}/api/chunk/${cid}?channels=${CHANNELS}&block=${blk.id}`);
+    const buf=await res.arrayBuffer();
+    S.received++; S.bytes+=buf.byteLength; S.bytesWin+=buf.byteLength; blk.have.add(k);
+    const b=parseBrick(buf);
+    const cur=blk.bricks.get(zi);
+    if(cur && cur.level<=b.level){ /* finer already present */ }
+    else{
+      const bmin=b.bmin, bmax=b.bmax;                  // block-local mm (BVX2)
+      if(cur && cur.tex) gl.deleteTexture(cur.tex);
+      blk.bricks.set(zi,{level:b.level,tex:upload3D(b),bmin,bmax,
+                         center:[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2]});
+    }
+  }catch(e){ console.warn("brick",blk.id,k,e.message); }
+  finally{ S.inflight.delete(gk); pump(); }
+}
+
+// ---------- camera ----------
+const cam={yaw:0.6,pitch:0.3,dist:400,target:[0,0,0]};
+let camPos=[0,0,400];
+function camWorld(){
+  const cy=Math.cos(cam.yaw),sy=Math.sin(cam.yaw),cp=Math.cos(cam.pitch),sp=Math.sin(cam.pitch);
+  const dir=[sy*cp, sp, cy*cp];
+  camPos=[cam.target[0]+dir[0]*cam.dist, cam.target[1]+dir[1]*cam.dist, cam.target[2]+dir[2]*cam.dist];
+  const fwd=[-dir[0],-dir[1],-dir[2]];
+  return {camPos,fwd};
+}
+let dragging=false,lx=0,ly=0;
+canvas.addEventListener("mousedown",e=>{dragging=true;lx=e.clientX;ly=e.clientY;});
+addEventListener("mouseup",()=>dragging=false);
+addEventListener("mousemove",e=>{ if(!dragging)return;
+  cam.yaw-=(e.clientX-lx)*0.008; cam.pitch=Math.max(-1.4,Math.min(1.4,cam.pitch+(e.clientY-ly)*0.008));
+  lx=e.clientX; ly=e.clientY; });
+canvas.addEventListener("wheel",e=>{ cam.dist=Math.max(40,Math.min(6000,cam.dist+e.deltaY*0.5)); e.preventDefault();},{passive:false});
+
+// fit camera to the placed blocks (world AABB of every block's extent box)
+const _tmp=vec3.create();
+function fitView(){
+  let lo=[ 1e9, 1e9, 1e9], hi=[-1e9,-1e9,-1e9], any=false;
+  for(const blk of S.blocks.values()){
+    if(!blk.visible) continue; any=true;
+    const [ez,ey,ex]=blk.extentMm;                    // half-extents (centred at local origin)
+    const hx=ex/2,hy=ey/2,hz=ez/2;
+    for(let i=0;i<8;i++){
+      const c=[(i&1?hx:-hx),(i&2?hy:-hy),(i&4?hz:-hz)];
+      vec3.transformMat4(_tmp,c,blk.matrix);
+      for(let a=0;a<3;a++){ lo[a]=Math.min(lo[a],_tmp[a]); hi[a]=Math.max(hi[a],_tmp[a]); }
+    }
+  }
+  if(!any) return;
+  cam.target=[(lo[0]+hi[0])/2,(lo[1]+hi[1])/2,(lo[2]+hi[2])/2];
+  const r=Math.max(hi[0]-lo[0],hi[1]-lo[1],hi[2]-lo[2]);
+  cam.dist=Math.max(60,r*1.4);
+}
+
+// ---------- view update loop ----------
+let lastView=0, lastKey="";
+async function maybeView(now){
+  if(now-lastView<350) return; lastView=now;
+  const {camPos:cp,fwd}=camWorld();
+  const key=cp.map(v=>v.toFixed(0)).join(",");
+  const idle=[...S.blocks.values()].every(b=>b.queue.length===0);
+  if(key===lastKey && idle && S.inflight.size===0) return;
+  lastKey=key;
+  for(const blk of S.blocks.values()){
+    if(!blk.visible) continue;
+    // push world camera into this block's local frame
+    const lp=vec3.transformMat4(vec3.create(), cp, blk.matrixInv);
+    const m3=mat3.fromMat4(mat3.create(), blk.matrixInv);
+    const lf=vec3.normalize(vec3.create(), vec3.transformMat3(vec3.create(), fwd, m3));
+    let res;
+    try{ res=await postView(blk,{position:[lp[0],lp[1],lp[2]],forward:[lf[0],lf[1],lf[2]],
+        rotation:[0,0,0,1],fov:60,viewportWidth:canvas.width,viewportHeight:canvas.height}); }
+    catch(e){ continue; }
+    for(const c of res.chunks){ enqueue(blk, c.coords[0], c.level, c.priority); }
+  }
+  pump();
+}
+
+// ---------- render ----------
+gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+gl.disable(gl.DEPTH_TEST);
+const proj=mat4.create(), view=mat4.create(), vp=mat4.create();
+const model=mat4.create(), modelInv=mat4.create(), tt=mat4.create();
+let frames=0,fpsT=performance.now(),fps=0;
+
+function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight;
+  if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;} }
+
+function draw(now){
+  requestAnimationFrame(draw); resize();
+  const {camPos:cp}=camWorld(); maybeView(now);
+
+  gl.viewport(0,0,canvas.width,canvas.height);
+  gl.clearColor(0.02,0.03,0.05,1); gl.clear(gl.COLOR_BUFFER_BIT);
+  mat4.perspective(proj, 60*Math.PI/180, canvas.width/canvas.height, 1, 20000);
+  mat4.lookAt(view, cp, cam.target, [0,1,0]);
+  mat4.multiply(vp, proj, view);
+
+  gl.useProgram(prog); gl.bindVertexArray(vao);
+  gl.uniformMatrix4fv(loc.vp,false,vp);
+  gl.uniform1f(loc.alpha,1.0); gl.uniform1i(loc.steps,48); gl.uniform1i(loc.vol,0);
+  gl.activeTexture(gl.TEXTURE0);
+
+  // collect every visible brick with its world model, sort back-to-front
+  const list=[];
+  for(const blk of S.blocks.values()){
+    if(!blk.visible) continue;
+    for(const b of blk.bricks.values()){
+      const wc=vec3.transformMat4(vec3.create(), b.center, blk.matrix);
+      list.push({blk,b,d:dist2(wc,cp)});
+    }
+  }
+  list.sort((a,z)=>z.d-a.d);
+  for(const {blk,b} of list){
+    // model = M_block * T(bmin) * S(extent)  maps unit cube -> world
+    mat4.identity(tt);
+    mat4.translate(tt,tt,b.bmin);
+    mat4.scale(tt,tt,[b.bmax[0]-b.bmin[0],b.bmax[1]-b.bmin[1],b.bmax[2]-b.bmin[2]]);
+    mat4.multiply(model, blk.matrix, tt);
+    mat4.invert(modelInv, model);
+    const cl=vec3.transformMat4(vec3.create(), cp, modelInv);   // camera in unit-cube space
+    gl.uniformMatrix4fv(loc.model,false,model);
+    gl.uniform3fv(loc.camL,cl);
+    gl.uniform3fv(loc.tint,blk.tint);
+    gl.bindTexture(gl.TEXTURE_3D,b.tex);
+    gl.drawArrays(gl.TRIANGLES,0,36);
+  }
+
+  frames++;
+  if(now-fpsT>=500){ fps=Math.round(frames*1000/(now-fpsT)); frames=0; fpsT=now;
+    S.mbps=S.bytesWin/((now-S.winT)/1000)/1048576; S.bytesWin=0; S.winT=now; updateHud(); }
+}
+function dist2(a,b){const x=a[0]-b[0],y=a[1]-b[1],z=a[2]-b[2];return x*x+y*y+z*z;}
+
+// ---------- HUD ----------
+const $=id=>document.getElementById(id);
+function updateHud(){
+  let bricks=0, pend=0;
+  for(const b of S.blocks.values()){ bricks+=b.bricks.size; pend+=b.queue.length; }
+  $("mbps").textContent=S.mbps.toFixed(1)+" MB/s";
+  $("bytes").textContent=fmt(S.bytes);
+  $("nblk").textContent=`${[...S.blocks.values()].filter(b=>b.visible).length}/${S.blocks.size}`;
+  $("req").textContent=S.requested; $("recv").textContent=S.received;
+  $("cached").textContent=bricks;
+  $("pend").textContent=pend; $("act").textContent=S.inflight.size;
+  $("fps").textContent=fps;
+}
+
+// ---------- block control UI ----------
+function numInput(val,step,on){
+  const el=document.createElement("input");
+  el.type="number"; el.step=step; el.value=(+val).toFixed(step<1?2:1);
+  el.addEventListener("input",()=>{ const v=parseFloat(el.value); if(!isNaN(v)) on(v); });
+  return el;
+}
+function axisRow(parent,names,vals,steps,on){
+  const g=document.createElement("div"); g.className="axes";
+  names.forEach((nm,i)=>{
+    const lab=document.createElement("label"); lab.textContent=nm; g.appendChild(lab);
+    g.appendChild(numInput(vals[i],steps,v=>on(i,v)));
+  });
+  parent.appendChild(g);
+}
+function buildPanel(){
+  const host=$("blocks"); host.innerHTML="";
+  $("pcount").textContent=`(${S.blocks.size})`;
+  for(const blk of S.blocks.values()){
+    const card=document.createElement("div"); card.className="blk"+(blk.visible?"":" hidden");
+    // header: swatch + name + extent + visibility
+    const head=document.createElement("div"); head.className="blkhead";
+    const sw=document.createElement("span"); sw.className="sw";
+    sw.style.background=`rgb(${blk.tint.map(c=>Math.round(c*255)).join(",")})`;
+    const nm=document.createElement("span"); nm.className="nm"; nm.textContent=blk.id;
+    const ex=document.createElement("span"); ex.className="ex";
+    ex.textContent=blk.extentMm.map(v=>v.toFixed(0)).join("×")+" mm";
+    const tog=document.createElement("label"); tog.className="toggle";
+    const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=blk.visible;
+    cb.addEventListener("change",()=>{ blk.visible=cb.checked; card.classList.toggle("hidden",!blk.visible);
+      saveTransforms(); if(blk.visible) requestViewSoon(); });
+    tog.appendChild(cb); tog.appendChild(document.createTextNode("show"));
+    head.append(sw,nm,ex,tog); card.appendChild(head);
+
+    const onChange=()=>{ recompute(blk); saveTransforms(); requestViewSoon(); };
+    let g=document.createElement("div"); g.className="grp"; g.textContent="Translation (mm)";
+    card.appendChild(g);
+    axisRow(card,["X","Y","Z"],blk.transform.t,1,(i,v)=>{blk.transform.t[i]=v; onChange();});
+    g=document.createElement("div"); g.className="grp"; g.textContent="Rotation (deg)";
+    card.appendChild(g);
+    axisRow(card,["X","Y","Z"],blk.transform.r,1,(i,v)=>{blk.transform.r[i]=v; onChange();});
+    g=document.createElement("div"); g.className="grp"; g.textContent="Scale";
+    card.appendChild(g);
+    axisRow(card,["X","Y","Z"],blk.transform.s,0.01,(i,v)=>{blk.transform.s[i]=v; onChange();});
+
+    const row2=document.createElement("div"); row2.className="row2";
+    const rb=document.createElement("button"); rb.textContent="Reset";
+    rb.addEventListener("click",()=>{ resetBlock(blk); });
+    const ib=document.createElement("button"); ib.textContent="Isolate";
+    ib.addEventListener("click",()=>{ for(const b of S.blocks.values()) b.visible=(b===blk);
+      buildPanel(); saveTransforms(); requestViewSoon(); });
+    row2.append(rb,ib); card.appendChild(row2);
+    card.dataset.id=blk.id;
+    host.appendChild(card);
+  }
+}
+function resetBlock(blk){
+  const d=blk.info.default_transform||{};
+  blk.transform={ t:(d.translation||[0,0,0]).slice(),
+                  r:(d.rotation_deg||[0,0,0]).slice(),
+                  s:(d.scale||[1,1,1]).slice() };
+  blk.visible=true; recompute(blk); saveTransforms(); buildPanel(); requestViewSoon();
+}
+let viewSoon=0;
+function requestViewSoon(){ lastKey=""; }   // force next maybeView to re-select
+
+$("btnReset").addEventListener("click",()=>{ for(const b of S.blocks.values()) resetBlock(b); fitView(); });
+$("btnFit").addEventListener("click",fitView);
+$("btnCopy").addEventListener("click",async()=>{
+  const o={};
+  for(const b of S.blocks.values()) o[b.id]={translation:b.transform.t,rotation_deg:b.transform.r,scale:b.transform.s,visible:b.visible};
+  const txt=JSON.stringify(o,null,2);
+  try{ await navigator.clipboard.writeText(txt); $("btnCopy").textContent="Copied!"; setTimeout(()=>$("btnCopy").textContent="Copy JSON",1200); }
+  catch(e){ console.log(txt); alert("Transforms (also logged to console):\n\n"+txt); }
+});
+
+// ---------- boot ----------
+(async function(){
+  $("server").textContent=location.host;
+  try{
+    const info=await getInfo();
+    const blockInfos = info.blocks || [ {block_id:"0", ...info} ];  // single-block fallback
+    const saved=loadSaved();
+    blockInfos.forEach((bi,idx)=>{
+      const d=bi.default_transform||{};
+      const sv=saved[bi.block_id];
+      const blk={
+        id:bi.block_id, info:bi,
+        extentMm:bi.extent_mm,                          // (z,y,x) mm
+        levelVox:{}, nBricks:0,
+        tint:PALETTE[idx%PALETTE.length],
+        visible: sv? (sv.visible!==false) : true,
+        transform: sv ? {t:sv.t.slice(),r:sv.r.slice(),s:sv.s.slice()}
+                      : {t:(d.translation||[0,0,0]).slice(),
+                         r:(d.rotation_deg||[0,0,0]).slice(),
+                         s:(d.scale||[1,1,1]).slice()},
+        bricks:new Map(), have:new Set(), queue:[], matrix:mat4.create(), matrixInv:mat4.create(),
+      };
+      bi.levels.forEach(l=>{ blk.levelVox[l.level]=l.xy_voxel_um/1000; });
+      const coarsest=bi.levels.find(l=>l.level===bi.coarsest_level);
+      blk.nBricks=coarsest?coarsest.grid[0]:0;
+      recompute(blk);
+      S.blocks.set(blk.id,blk); S.order.push(blk.id);
+    });
+    $("conn").innerHTML='<span class="dot ok"></span>CONNECTED';
+    buildPanel(); fitView();
+    // coarse whole-brain-per-block first: every z-slab at each block's coarsest level
+    let i=0;
+    for(const blk of S.blocks.values()){
+      blk.info.baseline_chunks.forEach((cid)=>{
+        const p=cid.replace("L","").split("."); enqueue(blk, +p[1], +p[0], 500+(i++));
+      });
+    }
+    pump();
+  }catch(e){ $("conn").innerHTML='<span class="dot bad"></span>OFFLINE'; console.error(e); }
+  requestAnimationFrame(draw);
+})();
+</script>
+
+<!-- shared page switcher (kept identical in roi585.html and index.html) -->
+<select id="pageNav" aria-label="switch page" style="position:fixed;bottom:8px;right:10px;z-index:9999;font:12px/1.3 ui-monospace,Menlo,Consolas,monospace;color:#cfe0ff;background:rgba(22,35,58,.95);border:1px solid #2c405e;border-radius:6px;padding:4px 8px;cursor:pointer;">
+  <option value="/">3D streaming</option>
+  <option value="/roi">ROI center picker</option>
+  <option value="/dashboard">stream dashboard</option>
+</select>
+<script>
+(function(){var s=document.getElementById("pageNav");
+ var p=location.pathname.replace(/\/+$/,"")||"/";
+ for(var i=0;i<s.options.length;i++){if(s.options[i].value===p){s.selectedIndex=i;break;}}
+ s.addEventListener("change",function(){if(s.value!==p)location.href=s.value;});})();
+</script>
+</body>
+</html>

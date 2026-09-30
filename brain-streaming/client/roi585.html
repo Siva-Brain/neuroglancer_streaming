@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>585 ROI · pick center + LODs</title>
+<style>
+  :root{color-scheme:dark;}
+  html,body{margin:0;height:100%;background:#05070c;overflow:hidden;
+            font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;color:#dfe6f0;}
+  #gl{position:fixed;inset:0;display:block;width:100%;height:100%;}
+  #labels{position:fixed;inset:0;pointer-events:none;}
+  .cell{position:absolute;box-sizing:border-box;border:1px solid #1b2740;}
+  .tag{position:absolute;top:6px;left:8px;background:rgba(8,12,20,.7);
+       border:1px solid #223049;border-radius:6px;padding:3px 7px;white-space:pre;}
+  .tag b{color:#8fb4ff;} .st{color:#f5c451;} .ok{color:#39d98a;}
+  /* crosshair lines drawn over the picker slice panels */
+  .xl{position:absolute;background:#f5c451;opacity:.75;pointer-events:none;}
+  .xl.v{width:1px;} .xl.h{height:1px;}
+  /* vertical divider between the picker (left) and the ROI display (right) */
+  #divider{position:fixed;top:0;bottom:0;width:2px;background:#223049;pointer-events:none;}
+  #top{position:fixed;top:6px;left:50%;transform:translateX(-50%);z-index:5;
+       display:flex;gap:10px;align-items:center;
+       background:rgba(8,12,20,.9);border:1px solid #223049;border-radius:8px;padding:6px 12px;}
+  #top b{color:#8fb4ff;}
+  select,button.mini{font:inherit;color:#cfe0ff;background:#16233a;border:1px solid #2c405e;
+         border-radius:6px;padding:2px 6px;cursor:pointer;}
+  button.mini:hover{background:#1e3153;}
+  #conn{font-size:11px;}
+  #saved{font-size:11px;color:#39d98a;opacity:0;transition:opacity .2s;}
+  #ctr{font-size:11px;color:#f5c451;}
+  #hint{position:fixed;bottom:6px;left:50%;transform:translateX(-50%);color:#5f6b82;text-align:center;}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="labels"></div>
+<div id="divider"></div>
+<div id="top">
+  <b>585</b>
+  <label>size <select id="selSize">
+    <option>512</option><option>1024</option><option selected>2048</option><option>4096</option>
+  </select></label>
+  <label>mode <select id="selMode">
+    <option value="region" selected>same physical region</option>
+    <option value="voxel">same voxels / level</option>
+  </select></label>
+  <label>opacity <input id="opac" type="range" min="0.05" max="3" step="0.05" value="0.6" style="vertical-align:middle;width:80px"></label>
+  <label>quality <input id="qual" type="range" min="48" max="256" step="16" value="160" style="vertical-align:middle;width:70px"></label>
+  <span id="ctr">center 50.0% , 50.0%</span>
+  <button id="btnDefault" class="mini" title="save the current view as the backend default (roi_settings.json)">★ default</button>
+  <button id="btnReset" class="mini" title="reset to the backend default">⟲ reset</button>
+  <span id="saved">saved ✓</span>
+  <span id="conn" class="st">connecting…</span>
+</div>
+<div id="hint">LEFT · pick center: drag crosshair on a slice · scroll = through-plane slice · release to fetch &nbsp;|&nbsp; RIGHT · L0·L2·L4·L7: drag = rotate all · scroll = zoom all (synced)</div>
+
+<script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
+<script>
+const {mat4, vec3} = glMatrix;
+const API = location.origin;
+const BLOCK = "585";
+const LEVELS = [0, 2, 4, 7];       // the four ROI-display panels (right pane)
+const BROWSE_LEVEL = 4;            // "L4 as volume": level browsed in the picker
+const BROWSE_SIZE = 100000000;     // huge -> server clamps to the whole slab
+
+const canvas = document.getElementById("gl");
+const gl = canvas.getContext("webgl2", {antialias:true});
+if(!gl){ document.getElementById("conn").textContent="NO WEBGL2"; }
+
+// ---- normalized ROI center in the slab plane (0.5,0.5 = geometric middle) ----
+// fx,fy drive the fetch; fz is only the through-plane slice shown in the picker.
+let fx = 0.5, fy = 0.5, fz = 0.5;
+let lastFx = 0.5, lastFy = 0.5;    // last center actually fetched
+
+// ---- volume raymarch program (picker L4 volume + all four ROI panels) ----
+const VERT=`#version 300 es
+layout(location=0) in vec3 aPos; uniform mat4 uViewProj,uModel; out vec3 vLocal;
+void main(){ vLocal=aPos; gl_Position=uViewProj*uModel*vec4(aPos,1.0); }`;
+const FRAG=`#version 300 es
+precision highp float; precision highp sampler3D;
+in vec3 vLocal; out vec4 frag;
+uniform vec3 uCamLocal; uniform sampler3D uVol; uniform int uSteps; uniform float uOpacity;
+vec2 hit(vec3 o,vec3 d){ vec3 iv=1.0/d; vec3 a=(vec3(0.0)-o)*iv,b=(vec3(1.0)-o)*iv;
+  vec3 n=min(a,b),f=max(a,b); return vec2(max(max(n.x,n.y),n.z),min(min(f.x,f.y),f.z)); }
+void main(){
+  vec3 d=normalize(vLocal-uCamLocal); vec2 t=hit(uCamLocal,d); t.x=max(t.x,0.0);
+  if(t.y<=t.x) discard;
+  int N=uSteps; float dt=(t.y-t.x)/float(N); vec3 oc=vec3(0.0); float oa=0.0;
+  for(int i=0;i<256;i++){ if(i>=N) break;
+    vec3 p=uCamLocal+d*(t.x+(float(i)+0.5)*dt);
+    vec2 s=texture(uVol,p).rg; float tis=1.0-s.r; float dn=s.g*tis;
+    if(dn>0.004){ float a=1.0-exp(-dn*uOpacity*dt*60.0);
+      vec3 c=mix(vec3(0.52,0.60,0.80),vec3(0.99),tis);
+      oc+=(1.0-oa)*a*c; oa+=(1.0-oa)*a; if(oa>0.995) break; } }
+  frag=vec4(oc,oa); }`;
+
+// ---- slice program (picker orthogonal sections) ----
+// A full-viewport quad samples the L4 volume on one axis-aligned plane.
+// axis 0 = axial (XY, through-plane z), 1 = coronal (XZ, through-plane y),
+// axis 2 = sagittal (YZ, through-plane x). uSlice is the through-plane coord.
+const SVERT=`#version 300 es
+layout(location=0) in vec2 aPos; out vec2 vUv;
+void main(){ vUv=aPos*0.5+0.5; gl_Position=vec4(aPos,0.0,1.0); }`;
+const SFRAG=`#version 300 es
+precision highp float; precision highp sampler3D;
+in vec2 vUv; out vec4 frag;
+uniform sampler3D uVol; uniform int uAxis; uniform float uSlice; uniform int uReady;
+void main(){
+  if(uReady==0){ frag=vec4(0.02,0.03,0.05,1.0); return; }
+  float u=vUv.x, w=1.0-vUv.y;               // screen top -> plane origin
+  vec3 p;
+  if(uAxis==0)      p=vec3(u, w, uSlice);    // axial   XY
+  else if(uAxis==1) p=vec3(u, uSlice, w);    // coronal XZ
+  else              p=vec3(uSlice, u, w);    // sagittal YZ
+  vec2 s=texture(uVol,p).rg; float tis=1.0-s.r; float dn=s.g*tis;
+  float g=clamp(dn*1.9+tis*0.10, 0.0, 1.0);
+  frag=vec4(vec3(g),1.0); }`;
+
+function mk(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+  if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))console.error(gl.getShaderInfoLog(o));return o;}
+function link(vs,fs){const p=gl.createProgram();
+  gl.attachShader(p,mk(gl.VERTEX_SHADER,vs));gl.attachShader(p,mk(gl.FRAGMENT_SHADER,fs));
+  gl.linkProgram(p);return p;}
+const prog=link(VERT,FRAG);
+const L={vp:gl.getUniformLocation(prog,"uViewProj"),model:gl.getUniformLocation(prog,"uModel"),
+  cam:gl.getUniformLocation(prog,"uCamLocal"),vol:gl.getUniformLocation(prog,"uVol"),
+  steps:gl.getUniformLocation(prog,"uSteps"),opacity:gl.getUniformLocation(prog,"uOpacity")};
+const sprog=link(SVERT,SFRAG);
+const SL={vol:gl.getUniformLocation(sprog,"uVol"),axis:gl.getUniformLocation(sprog,"uAxis"),
+  slice:gl.getUniformLocation(sprog,"uSlice"),ready:gl.getUniformLocation(sprog,"uReady")};
+
+// unit cube for raymarch
+const cube=new Float32Array([
+ 0,0,0,1,0,0,1,1,0,0,0,0,1,1,0,0,1,0, 0,0,1,1,1,1,1,0,1,0,0,1,0,1,1,1,1,1,
+ 0,0,0,0,1,0,0,1,1,0,0,0,0,1,1,0,0,1, 1,0,0,1,0,1,1,1,1,1,0,0,1,1,1,1,1,0,
+ 0,0,0,0,0,1,1,0,1,0,0,0,1,0,1,1,0,0, 0,1,0,1,1,0,1,1,1,0,1,0,1,1,1,0,1,1]);
+const cubeVao=gl.createVertexArray(); gl.bindVertexArray(cubeVao);
+const cubeVbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,cubeVbo);
+gl.bufferData(gl.ARRAY_BUFFER,cube,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
+// screen quad for slices
+const quad=new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+const quadVao=gl.createVertexArray(); gl.bindVertexArray(quadVao);
+const quadVbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,quadVbo);
+gl.bufferData(gl.ARRAY_BUFFER,quad,gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
+gl.bindVertexArray(null);
+
+// ---- data holders ----
+const picker = {tex:null, dx:0,dy:0,dz:0, bmin:[-.5,-.5,-.5],bmax:[.5,.5,.5], status:"queued"};
+const roi = {};   // level -> {tex,bmin,bmax,status,dims,mm,um}
+LEVELS.forEach(lv=>roi[lv]={tex:null,bmin:[-.5,-.5,-.5],bmax:[.5,.5,.5],
+  status:"queued",dims:"",mm:"",um:""});
+// One SHARED camera drives all four ROI panels (same physical ROI, so they
+// rotate/zoom together); the picker's L4 volume has its own. zoom=1 => fit pane.
+let roiCam    = {yaw:0.5, pitch:0.3, zoom:1.0};
+let pickerCam = {yaw:0.6, pitch:0.35, zoom:1.0};
+let roiGen=0;     // bumped per ROI reload so stale fetches are ignored
+
+// ---- the 8 views: left pane = picker (3 slices + volume), right = ROI panels ----
+const views = [
+  {pane:"L",g:0,kind:"slice",axis:0,name:"axial"},
+  {pane:"L",g:1,kind:"slice",axis:1,name:"coronal"},
+  {pane:"L",g:2,kind:"slice",axis:2,name:"sagittal"},
+  {pane:"L",g:3,kind:"vol",  src:"picker",name:"L"+BROWSE_LEVEL+" volume"},
+  {pane:"R",g:0,kind:"vol",  level:0},
+  {pane:"R",g:1,kind:"vol",  level:2},
+  {pane:"R",g:2,kind:"vol",  level:4},
+  {pane:"R",g:3,kind:"vol",  level:7},
+];
+
+// css-pixel rect (top-down) of a view
+function rectOf(v){
+  const W=canvas.clientWidth,H=canvas.clientHeight;
+  const halfW=W/2, cw=halfW/2, ch=H/2;
+  const x0=(v.pane==="L")?0:halfW;
+  const col=v.g%2, row=(v.g/2)|0;
+  return {x:x0+col*cw, y:row*ch, w:cw, h:ch};
+}
+
+function parse(buf){
+  const dv=new DataView(buf);
+  const level=dv.getUint8(4), nch=dv.getUint8(5);
+  const dz=dv.getUint16(20,true),dy=dv.getUint16(22,true),dx=dv.getUint16(24,true);
+  const bmin=[dv.getFloat32(26,true),dv.getFloat32(30,true),dv.getFloat32(34,true)];
+  const bmax=[dv.getFloat32(38,true),dv.getFloat32(42,true),dv.getFloat32(46,true)];
+  const vox=new Uint8Array(buf,50,dz*dy*dx*nch);
+  return {level,nch,dz,dy,dx,bmin,bmax,vox};
+}
+function upload(b){
+  const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D,t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  for(const p of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T,gl.TEXTURE_WRAP_R])
+    gl.texParameteri(gl.TEXTURE_3D,p,gl.CLAMP_TO_EDGE);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8,b.dx,b.dy,b.dz,0,gl.RG,gl.UNSIGNED_BYTE,b.vox);
+  return t;
+}
+// Camera distance so the box's bounding sphere fully fits the pane at ANY
+// orientation (so synced rotation never clips) for this viewport aspect + FOV.
+const FOVY = 0.9;
+function fitDist(bmin,bmax,aspect){
+  const dx=bmax[0]-bmin[0], dy=bmax[1]-bmin[1], dz=bmax[2]-bmin[2];
+  const r = 0.5*Math.hypot(dx,dy,dz);              // box is centered at origin
+  const halfV = FOVY/2;
+  const halfH = Math.atan(Math.tan(halfV)*Math.max(aspect,1e-3));
+  const half  = Math.min(halfV, halfH);            // limiting half-angle
+  return (r/Math.sin(half)) * 1.06;                // small margin
+}
+
+// ---------- overlay (borders, tags, crosshairs) ----------
+const labelHost=document.getElementById("labels");
+const cellEl=[], tagEl=[], xhair=[];  // xhair[sliceViewIndex] = {v,h}
+function buildOverlay(){
+  labelHost.innerHTML=""; cellEl.length=0; tagEl.length=0; xhair.length=0;
+  views.forEach((v,i)=>{
+    const c=document.createElement("div"); c.className="cell"; labelHost.appendChild(c); cellEl[i]=c;
+    const t=document.createElement("div"); t.className="tag"; c.appendChild(t); tagEl[i]=t;
+    if(v.kind==="slice"){
+      const vl=document.createElement("div"); vl.className="xl v";
+      const hl=document.createElement("div"); hl.className="xl h";
+      labelHost.appendChild(vl); labelHost.appendChild(hl); xhair[i]={v:vl,h:hl};
+    }
+  });
+}
+function updateOverlay(){
+  document.getElementById("divider").style.left=(canvas.clientWidth/2-1)+"px";
+  views.forEach((v,i)=>{
+    const r=rectOf(v), c=cellEl[i];
+    c.style.left=r.x+"px"; c.style.top=r.y+"px"; c.style.width=r.w+"px"; c.style.height=r.h+"px";
+    if(v.kind==="slice"){
+      // crosshair in-plane fractions (screen top-down): see mapping below
+      const vf = v.axis===2 ? fy : fx;               // vertical line -> x-ish
+      const hf = v.axis===0 ? fy : fz;               // horizontal line -> y/z
+      const xh=xhair[i];
+      xh.v.style.left=(r.x+vf*r.w)+"px"; xh.v.style.top=r.y+"px"; xh.v.style.height=r.h+"px";
+      xh.h.style.top=(r.y+hf*r.h)+"px"; xh.h.style.left=r.x+"px"; xh.h.style.width=r.w+"px";
+      const sl = v.axis===0?fz : v.axis===1?fy : fx;
+      tagEl[i].innerHTML=`<b>${v.name}</b>  ${(sl*100).toFixed(0)}%`;
+    } else if(v.src==="picker"){
+      tagEl[i].innerHTML=`<b>${v.name}</b>  ${picker.status==="ready"
+        ? `<span class="ok">${picker.dx}×${picker.dy}×${picker.dz}</span>` : `<span class="st">${picker.status}</span>`}`;
+    } else {
+      const c2=roi[v.level];
+      const st = c2.status==="ready" ? `<span class="ok">${c2.dims} · ${c2.mm}</span>`
+               : `<span class="st">${c2.status}</span>`;
+      tagEl[i].innerHTML=`<div><b>L${v.level}</b>  ${c2.um}\n${st}</div>`;
+    }
+  });
+}
+
+// ---------- interaction ----------
+function viewAt(px,py){
+  for(const v of views){ const r=rectOf(v);
+    if(px>=r.x&&px<r.x+r.w&&py>=r.y&&py<r.y+r.h) return v; }
+  return null;
+}
+let drag=null, lx=0, ly=0, centerDirty=false;
+// set the center from a click/drag position inside a slice cell
+function setCenterFromSlice(v,px,py){
+  const r=rectOf(v);
+  const u=Math.min(1,Math.max(0,(px-r.x)/r.w));
+  const w=Math.min(1,Math.max(0,(py-r.y)/r.h));
+  if(v.axis===0){ fx=u; fy=w; }        // axial   -> (fx,fy)
+  else if(v.axis===1){ fx=u; fz=w; }   // coronal -> (fx,fz)
+  else { fy=u; fz=w; }                 // sagittal-> (fy,fz)
+  centerDirty=true;
+}
+canvas.addEventListener("mousedown",e=>{
+  const v=viewAt(e.clientX,e.clientY); if(!v) return;
+  lx=e.clientX; ly=e.clientY;
+  if(v.kind==="slice"){ drag={type:"cross",v}; setCenterFromSlice(v,e.clientX,e.clientY); }
+  else { drag={type:"rot",v}; }
+});
+canvas.addEventListener("mousemove",e=>{
+  if(!drag) return;
+  if(drag.type==="cross"){ setCenterFromSlice(drag.v,e.clientX,e.clientY); }
+  else { const cam = drag.v.src==="picker" ? pickerCam : roiCam;  // ROI cam is shared -> all 4 rotate together
+    cam.yaw+=(e.clientX-lx)*0.01;
+    cam.pitch=Math.max(-1.5,Math.min(1.5,cam.pitch+(e.clientY-ly)*0.01)); }
+  lx=e.clientX; ly=e.clientY;
+});
+addEventListener("mouseup",()=>{
+  if(drag){
+    if(drag.type==="cross") commitCenter();   // fetch only when the pick is over
+    else saveSettings();                      // remember rotation
+  }
+  drag=null;
+});
+canvas.addEventListener("wheel",e=>{
+  const v=viewAt(e.clientX,e.clientY); if(!v) return;
+  e.preventDefault();
+  if(v.kind==="slice"){                              // scroll = move through-plane slice
+    const step=Math.sign(e.deltaY)*0.02;
+    if(v.axis===0) fz=Math.min(1,Math.max(0,fz+step));
+    else if(v.axis===1){ fy=Math.min(1,Math.max(0,fy+step)); centerDirty=true; }
+    else { fx=Math.min(1,Math.max(0,fx+step)); centerDirty=true; }
+    scheduleCommit();                                // debounce -> fetch after scrolling stops
+  } else {                                           // scroll = zoom (shared across the 4 ROI panels)
+    const cam = v.src==="picker" ? pickerCam : roiCam;
+    cam.zoom=Math.max(0.15,Math.min(8,cam.zoom*(1-Math.sign(e.deltaY)*0.1)));
+    scheduleSave();
+  }
+},{passive:false});
+
+// fetch the ROI only once a center pick has finished and actually moved
+let commitTimer=null;
+function scheduleCommit(){ clearTimeout(commitTimer); commitTimer=setTimeout(commitCenter,250); }
+function commitCenter(){
+  clearTimeout(commitTimer);
+  if(!centerDirty) return;
+  if(Math.abs(fx-lastFx)<1e-4 && Math.abs(fy-lastFy)<1e-4){ centerDirty=false; return; }
+  centerDirty=false; loadRoi(); saveSettings();
+}
+
+// ---------- draw ----------
+gl.enable(gl.SCISSOR_TEST);
+const proj=mat4.create(),view=mat4.create(),vp=mat4.create(),model=mat4.create(),inv=mat4.create();
+function drawVolume(state,cam,r){
+  if(state.status!=="ready"||!state.tex) return;
+  const cw=r.w,chh=r.h;
+  gl.useProgram(prog); gl.bindVertexArray(cubeVao);
+  gl.uniform1i(L.vol,0); gl.activeTexture(gl.TEXTURE0);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE,gl.ONE_MINUS_SRC_ALPHA); gl.disable(gl.DEPTH_TEST);
+  mat4.perspective(proj,FOVY,cw/chh,0.001,1e6);
+  // distance = fit-to-pane / zoom, recomputed each frame so resize always fits
+  const dist=fitDist(state.bmin,state.bmax,cw/chh)/cam.zoom;
+  const cp=[Math.sin(cam.yaw)*Math.cos(cam.pitch),Math.sin(cam.pitch),
+            Math.cos(cam.yaw)*Math.cos(cam.pitch)].map(v=>v*dist);
+  mat4.lookAt(view,cp,[0,0,0],[0,1,0]); mat4.multiply(vp,proj,view);
+  mat4.identity(model); mat4.translate(model,model,state.bmin);
+  mat4.scale(model,model,[state.bmax[0]-state.bmin[0],state.bmax[1]-state.bmin[1],state.bmax[2]-state.bmin[2]]);
+  mat4.invert(inv,model);
+  gl.uniformMatrix4fv(L.vp,false,vp); gl.uniformMatrix4fv(L.model,false,model);
+  gl.uniform3fv(L.cam,vec3.transformMat4([],cp,inv));
+  gl.uniform1i(L.steps,+document.getElementById("qual").value);
+  gl.uniform1f(L.opacity,+document.getElementById("opac").value);
+  gl.bindTexture(gl.TEXTURE_3D,state.tex); gl.drawArrays(gl.TRIANGLES,0,36);
+}
+function drawSlice(v){
+  gl.useProgram(sprog); gl.bindVertexArray(quadVao);
+  gl.disable(gl.BLEND);
+  gl.uniform1i(SL.vol,0); gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(SL.axis,v.axis);
+  gl.uniform1f(SL.slice, v.axis===0?fz : v.axis===1?fy : fx);
+  gl.uniform1i(SL.ready, (picker.status==="ready"&&picker.tex)?1:0);
+  if(picker.tex) gl.bindTexture(gl.TEXTURE_3D,picker.tex);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+function draw(){
+  requestAnimationFrame(draw);
+  const W=canvas.width=canvas.clientWidth, H=canvas.height=canvas.clientHeight;
+  views.forEach(v=>{
+    const r=rectOf(v);
+    const vx=r.x, vy=H-(r.y+r.h);           // css top-down -> gl bottom-up
+    gl.viewport(vx,vy,r.w,r.h); gl.scissor(vx,vy,r.w,r.h);
+    gl.clearColor(0.02,0.03,0.05,1); gl.clear(gl.COLOR_BUFFER_BIT);
+    if(v.kind==="slice") drawSlice(v);
+    else if(v.src==="picker") drawVolume(picker, pickerCam, r);
+    else drawVolume(roi[v.level], roiCam, r);
+  });
+  updateOverlay();
+  const ctr=document.getElementById("ctr");
+  ctr.textContent=`center ${(fx*100).toFixed(1)}% , ${(fy*100).toFixed(1)}%`;
+}
+
+// ---------- loads ----------
+async function loadPicker(){
+  const conn=document.getElementById("conn");
+  try{
+    const url=`${API}/api/roi?block=${BLOCK}&level=${BROWSE_LEVEL}&size=${BROWSE_SIZE}&mode=region&cap=256`;
+    const buf=await (await fetch(url)).arrayBuffer();
+    const b=parse(buf); picker.tex=upload(b);
+    picker.dx=b.dx; picker.dy=b.dy; picker.dz=b.dz;
+    picker.bmin=b.bmin; picker.bmax=b.bmax;
+    picker.status="ready";
+  }catch(e){ picker.status="error"; console.error("picker",e); conn.className="st"; conn.textContent="OFFLINE"; }
+}
+
+async function loadRoi(){
+  const myGen=++roiGen;
+  lastFx=fx; lastFy=fy;
+  const size=document.getElementById("selSize").value;
+  const mode=document.getElementById("selMode").value;
+  const conn=document.getElementById("conn");
+  LEVELS.forEach(lv=>{ if(roi[lv].tex){ gl.deleteTexture(roi[lv].tex); roi[lv].tex=null; } });
+  let info;
+  try{ info=await (await fetch(`${API}/api/roi/info?block=${BLOCK}&size=${size}&mode=${mode}`)).json(); }
+  catch(e){ conn.className="st"; conn.textContent="OFFLINE"; return; }
+  if(myGen!==roiGen) return;
+  const byLevel=Object.fromEntries(info.levels.map(l=>[l.level,l]));
+  LEVELS.forEach(lv=>{
+    const l=byLevel[lv]||{level:lv,xy_voxel_um:0,roi_mm:[0,0,0]};
+    const c=roi[lv];
+    c.status="queued"; c.dims="";
+    c.mm=`${l.roi_mm[0]}×${l.roi_mm[1]}×${l.roi_mm[2]}mm`;
+    c.um=`${l.xy_voxel_um>=1?l.xy_voxel_um.toFixed(0):l.xy_voxel_um.toFixed(2)}µm`;
+  });
+  conn.className="ok"; conn.textContent="loading…";
+  for(const lv of [...LEVELS].sort((a,b)=>b-a)){   // coarse -> fine
+    if(myGen!==roiGen) return;
+    const c=roi[lv]; c.status="loading…";
+    try{
+      const url=`${API}/api/roi?block=${BLOCK}&level=${lv}&size=${size}&mode=${mode}`
+               +`&fx=${fx.toFixed(4)}&fy=${fy.toFixed(4)}`;
+      const buf=await (await fetch(url)).arrayBuffer();
+      if(myGen!==roiGen) return;
+      const b=parse(buf); c.tex=upload(b); c.bmin=b.bmin; c.bmax=b.bmax;
+      c.dims=`${b.dx}×${b.dy}×${b.dz}`; c.status="ready";
+    }catch(e){ c.status="error"; console.error("L"+lv,e); }
+  }
+  if(myGen===roiGen) conn.textContent="ready";
+}
+
+// ---------- settings: browser-remembered, backend-defaulted ----------
+// The backend serves a default JSON (/api/roi/settings); the browser overlays
+// its own remembered tweaks (localStorage) and can promote them back to the
+// backend default ("★ default") or drop them to re-fetch the default ("⟲ reset").
+const LS_KEY="roi585.settings";
+const $=id=>document.getElementById(id);
+const numOr=(v,d)=>Number.isFinite(+v)?+v:d;
+
+function collectSettings(){
+  return {
+    size:+$("selSize").value, mode:$("selMode").value,
+    opacity:+$("opac").value, quality:+$("qual").value,
+    center:{fx,fy,fz},
+    roiView:{yaw:roiCam.yaw,pitch:roiCam.pitch,zoom:roiCam.zoom},
+    pickerView:{yaw:pickerCam.yaw,pitch:pickerCam.pitch,zoom:pickerCam.zoom},
+  };
+}
+function applySettings(s){                     // partial-safe: only sets present keys
+  if(!s||typeof s!=="object") return;
+  if(s.size!=null){ const v=String(s.size);
+    if([...$("selSize").options].some(o=>o.value===v)) $("selSize").value=v; }
+  if(s.mode) $("selMode").value=s.mode;
+  if(s.opacity!=null) $("opac").value=s.opacity;
+  if(s.quality!=null) $("qual").value=s.quality;
+  if(s.center){ fx=numOr(s.center.fx,fx); fy=numOr(s.center.fy,fy); fz=numOr(s.center.fz,fz);
+                lastFx=fx; lastFy=fy; }
+  if(s.roiView){ roiCam.yaw=numOr(s.roiView.yaw,roiCam.yaw); roiCam.pitch=numOr(s.roiView.pitch,roiCam.pitch);
+                 roiCam.zoom=numOr(s.roiView.zoom,roiCam.zoom); }
+  if(s.pickerView){ pickerCam.yaw=numOr(s.pickerView.yaw,pickerCam.yaw); pickerCam.pitch=numOr(s.pickerView.pitch,pickerCam.pitch);
+                    pickerCam.zoom=numOr(s.pickerView.zoom,pickerCam.zoom); }
+}
+function saveSettings(){
+  try{ localStorage.setItem(LS_KEY,JSON.stringify(collectSettings())); }catch(e){}
+}
+let saveTimer=null;
+function scheduleSave(){ clearTimeout(saveTimer); saveTimer=setTimeout(saveSettings,400); }
+function flashSaved(txt){ const el=$("saved"); el.textContent=txt||"saved ✓";
+  el.style.opacity="1"; setTimeout(()=>el.style.opacity="0",1200); }
+
+let backendDefault={};
+async function fetchDefault(){
+  try{ backendDefault=await (await fetch(`${API}/api/roi/settings`)).json(); }
+  catch(e){ backendDefault={}; }
+  return backendDefault;
+}
+async function saveAsDefault(){
+  try{
+    const r=await fetch(`${API}/api/roi/settings`,{method:"PUT",
+      headers:{"Content-Type":"application/json"},body:JSON.stringify(collectSettings())});
+    flashSaved(r.ok?"default saved ✓":"save failed");
+  }catch(e){ flashSaved("save failed"); }
+}
+async function resetToDefault(){
+  try{ localStorage.removeItem(LS_KEY); }catch(e){}
+  applySettings(await fetchDefault());
+  flashSaved("reset ✓"); loadRoi();
+}
+
+$("selSize").addEventListener("change",()=>{ loadRoi(); saveSettings(); });
+$("selMode").addEventListener("change",()=>{ loadRoi(); saveSettings(); });
+$("opac").addEventListener("input",scheduleSave);
+$("qual").addEventListener("input",scheduleSave);
+$("btnDefault").addEventListener("click",saveAsDefault);
+$("btnReset").addEventListener("click",resetToDefault);
+addEventListener("resize",()=>{ buildOverlay(); });
+
+buildOverlay();
+requestAnimationFrame(draw);
+(async ()=>{
+  await fetchDefault();
+  applySettings(backendDefault);                 // backend baseline …
+  try{ const s=localStorage.getItem(LS_KEY); if(s) applySettings(JSON.parse(s)); }catch(e){}  // … then browser overrides
+  await loadPicker();
+  await loadRoi();
+})();
+</script>
+
+<!-- shared page switcher (kept identical in volume.html and index.html) -->
+<select id="pageNav" aria-label="switch page" style="position:fixed;bottom:8px;right:10px;z-index:9999;font:12px/1.3 ui-monospace,Menlo,Consolas,monospace;color:#cfe0ff;background:rgba(22,35,58,.95);border:1px solid #2c405e;border-radius:6px;padding:4px 8px;cursor:pointer;">
+  <option value="/">3D streaming</option>
+  <option value="/roi">ROI center picker</option>
+  <option value="/dashboard">stream dashboard</option>
+</select>
+<script>
+(function(){var s=document.getElementById("pageNav");
+ var p=location.pathname.replace(/\/+$/,"")||"/";
+ for(var i=0;i<s.options.length;i++){if(s.options[i].value===p){s.selectedIndex=i;break;}}
+ s.addEventListener("change",function(){if(s.value!==p)location.href=s.value;});})();
+</script>
+</body>
+</html>

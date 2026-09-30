@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brain Stream Client</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0b0e14; font: 13px/1.5 ui-monospace, Menlo, Consolas, monospace; color: #dfe6f0; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  #hud {
+    position: fixed; top: 12px; left: 12px; width: 268px; padding: 12px 14px;
+    background: rgba(14,18,28,.82); border: 1px solid #24304a; border-radius: 10px;
+    backdrop-filter: blur(6px); pointer-events: none; white-space: pre-wrap;
+  }
+  #hud h1 { font-size: 12px; margin: 0 0 8px; letter-spacing: .5px; color: #8fb4ff; }
+  .row { display: flex; justify-content: space-between; }
+  .k { color: #8794ab; } .v { color: #eaf1ff; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:6px; vertical-align:middle;}
+  .ok { background:#39d98a; } .bad { background:#ff5c5c; } .wait{ background:#f5c451;}
+  hr { border: none; border-top: 1px solid #24304a; margin: 8px 0; }
+  #hint { position: fixed; bottom: 12px; left: 12px; color:#5f6b82; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="hud">
+  <h1>DGX BRAIN STREAM</h1>
+  <div class="row"><span class="k">Connection</span><span class="v" id="conn"><span class="dot wait"></span>…</span></div>
+  <div class="row"><span class="k">Server</span><span class="v" id="server">—</span></div>
+  <hr>
+  <div class="row"><span class="k">Chunks received</span><span class="v" id="recv">0</span></div>
+  <div class="row"><span class="k">Chunks cached</span><span class="v" id="cached">0</span></div>
+  <div class="row"><span class="k">Bytes received</span><span class="v" id="bytes">0 B</span></div>
+  <hr>
+  <div class="row"><span class="k">Brain LOD (min)</span><span class="v" id="lodmin">—</span></div>
+  <div class="row"><span class="k">Visible LOD (max)</span><span class="v" id="lodmax">—</span></div>
+  <hr>
+  <div class="row"><span class="k">Active requests</span><span class="v" id="active">0</span></div>
+  <div class="row"><span class="k">Pending requests</span><span class="v" id="pending">0</span></div>
+  <div class="row"><span class="k">Cache hits</span><span class="v" id="hits">0</span></div>
+  <hr>
+  <div class="row"><span class="k">FPS</span><span class="v" id="fps">0</span></div>
+</div>
+<div id="hint">drag = orbit · scroll = zoom · right-drag = pan &nbsp;|&nbsp; camera moves drive streaming</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+<script>
+// ---------------------------------------------------------------------------
+// BrainStreamClient  (networking only) -- mirrors the planned Unity C# class.
+// ---------------------------------------------------------------------------
+const API = location.origin;  // client is served by the DGX server itself
+const MAX_CONCURRENCY = 3;
+
+const S = {
+  received: 0, bytes: 0, hits: 0,
+  cache: new Map(),        // "id@lod" -> true   (BrainChunkCache: never re-download)
+  meta: new Map(),         // id -> chunk metadata
+  currentLod: new Map(),   // id -> lod currently displayed
+  desired: new Map(),      // id -> target lod (from last view update)
+  visible: new Set(),      // ids currently visible
+  inflight: new Map(),     // "id@lod" -> AbortController
+  queue: [],               // [{id, lod, priority}]
+};
+
+async function getInfo()   { return (await fetch(`${API}/api/brain/info`)).json(); }
+async function getChunks() { return (await fetch(`${API}/api/brain/chunks`)).json(); }
+
+async function postView(cam) {
+  const r = await fetch(`${API}/api/brain/view`, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(cam),
+  });
+  return r.json();
+}
+
+// parse binary 'BRN1' payload -> {positions, indices}
+function parseChunk(buf) {
+  const dv = new DataView(buf);
+  const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+  if (magic !== "BRN1") throw new Error("bad magic " + magic);
+  const V = dv.getUint32(4, true), I = dv.getUint32(8, true);
+  const positions = new Float32Array(buf, 12, V * 3);
+  const indices   = new Uint32Array(buf, 12 + V * 12, I);
+  return { positions, indices };
+}
+
+// ---------------------------------------------------------------------------
+// BrainChunkCache + request pump  (dedup, concurrency limit, cancellation)
+// ---------------------------------------------------------------------------
+function enqueue(id, lod, priority) {
+  const key = `${id}@${lod}`;
+  if (S.cache.has(key) || S.inflight.has(key)) return;
+  const ex = S.queue.find(q => q.id === id && q.lod === lod);
+  if (ex) { ex.priority = priority; return; }
+  S.queue.push({ id, lod, priority });
+}
+
+function cancelIrrelevant() {
+  // CANCEL_CHUNK: abort in-flight fetches whose LOD is no longer the target.
+  for (const [key, ctrl] of S.inflight) {
+    const [id, lodStr] = key.split("@"); const lod = +lodStr;
+    const want = S.desired.get(id);
+    if (want === undefined) continue;
+    if (lod > want && !S.cache.has(`${id}@${want}`)) continue; // still useful upgrade
+    if (lod !== want && lod !== 0) { ctrl.abort(); S.inflight.delete(key); }
+  }
+  S.queue = S.queue.filter(q => {
+    const want = S.desired.get(q.id);
+    return want === undefined || q.lod <= want;
+  });
+}
+
+async function fetchChunk(id, lod) {
+  const key = `${id}@${lod}`;
+  const ctrl = new AbortController();
+  S.inflight.set(key, ctrl);
+  try {
+    const res = await fetch(`${API}/api/brain/chunk/${id}?lod=${lod}`, { signal: ctrl.signal });
+    const buf = await res.arrayBuffer();
+    S.received += 1; S.bytes += buf.byteLength;
+    S.cache.set(key, true);
+    applyChunk(id, lod, parseChunk(buf));   // hand off to renderer
+  } catch (e) {
+    if (e.name !== "AbortError") console.warn("chunk", key, e.message);
+  } finally {
+    S.inflight.delete(key);
+    pump();
+  }
+}
+
+function pump() {
+  S.queue.sort((a, b) => a.priority - b.priority);
+  while (S.inflight.size < MAX_CONCURRENCY && S.queue.length) {
+    const { id, lod } = S.queue.shift();
+    const key = `${id}@${lod}`;
+    if (S.cache.has(key) || S.inflight.has(key)) continue;
+    fetchChunk(id, lod);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// BrainRenderer  (rendering only)  -- Sony branch would swap the display here.
+// ---------------------------------------------------------------------------
+const app = document.getElementById("app");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0e14);
+const camera = new THREE.PerspectiveCamera(60, innerWidth/innerHeight, 1, 5000);
+camera.position.set(180, 60, 320);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const key = new THREE.DirectionalLight(0xffffff, 0.9); key.position.set(1, 1, 1); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 0.4); rim.position.set(-1, -0.3, -1); scene.add(rim);
+
+const controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+const meshes = new Map();  // id -> THREE.Mesh
+
+function applyChunk(id, lod, geo) {
+  const meta = S.meta.get(id);
+  const cur = S.currentLod.get(id);
+  if (cur !== undefined && cur >= lod) return;          // don't downgrade
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(geo.positions, 3));
+  g.setIndex(new THREE.BufferAttribute(geo.indices, 1));
+  g.computeVertexNormals();
+  const c = meta ? meta.color : [0.8,0.8,0.8];
+  const mat = new THREE.MeshPhongMaterial({
+    color: new THREE.Color(c[0], c[1], c[2]), shininess: 24,
+    flatShading: lod === 0,      // low LOD looks faceted -> visually obvious
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  const old = meshes.get(id);
+  if (old) { scene.remove(old); old.geometry.dispose(); old.material.dispose(); }
+  meshes.set(id, mesh); scene.add(mesh);
+  S.currentLod.set(id, lod);
+}
+
+// ---------------------------------------------------------------------------
+// BrainCameraController  -> VIEW_UPDATE loop
+// ---------------------------------------------------------------------------
+const fwd = new THREE.Vector3();
+let lastView = 0, lastCamKey = "";
+
+async function maybeSendView(now) {
+  if (now - lastView < 350) return;
+  lastView = now;
+  camera.getWorldDirection(fwd);
+  const camKey = camera.position.toArray().map(v=>v.toFixed(0)).join(",") +
+                 fwd.toArray().map(v=>v.toFixed(2)).join(",");
+  if (camKey === lastCamKey && S.queue.length === 0 && S.inflight.size === 0) return;
+  lastCamKey = camKey;
+
+  const res = await postView({
+    camera_position: camera.position.toArray(),
+    camera_rotation: [camera.quaternion.x, camera.quaternion.y, camera.quaternion.z, camera.quaternion.w],
+    camera_forward: fwd.toArray(),
+    fov: camera.fov,
+    viewport: { width: innerWidth, height: innerHeight },
+  });
+
+  S.visible.clear(); S.desired.clear();
+  for (const c of res.chunks) {
+    S.desired.set(c.chunk_id, c.target_lod);
+    if (c.visible) S.visible.add(c.chunk_id);
+    // progressive: request every rung from (current+1) up to target
+    const start = (S.currentLod.get(c.chunk_id) ?? -1) + 1;
+    for (let l = Math.max(start, 0); l <= c.target_lod; l++) {
+      const k = `${c.chunk_id}@${l}`;
+      if (S.cache.has(k)) { if (l === c.target_lod) S.hits++; continue; }
+      enqueue(c.chunk_id, l, c.priority);
+    }
+  }
+  cancelIrrelevant();
+  pump();
+}
+
+// ---------------------------------------------------------------------------
+// bootstrap + main loop
+// ---------------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+function fmtBytes(n){ if(n<1024)return n+" B"; if(n<1048576)return (n/1024).toFixed(1)+" KB"; return (n/1048576).toFixed(2)+" MB"; }
+
+async function boot() {
+  $("server").textContent = location.host;
+  try {
+    const info = await getInfo();
+    const { chunks } = await getChunks();
+    chunks.forEach(c => S.meta.set(c.chunk_id, c));
+    $("conn").innerHTML = '<span class="dot ok"></span>CONNECTED';
+    // Time 0: request the ENTIRE brain at LOD0 first (coarse, fast).
+    info.chunk_ids.forEach((id, i) => enqueue(id, 0, 1000 + i));
+    pump();
+  } catch (e) {
+    $("conn").innerHTML = '<span class="dot bad"></span>OFFLINE';
+    console.error(e);
+  }
+}
+
+let frames = 0, fpsT = performance.now(), fps = 0;
+function loop(now) {
+  requestAnimationFrame(loop);
+  controls.update();
+  maybeSendView(now);
+  renderer.render(scene, camera);
+
+  frames++;
+  if (now - fpsT >= 500) { fps = Math.round(frames * 1000 / (now - fpsT)); frames = 0; fpsT = now; }
+  const lods = [...S.currentLod.values()];
+  const visLods = [...S.visible].map(id => S.currentLod.get(id)).filter(v => v !== undefined);
+  $("recv").textContent = S.received;
+  $("cached").textContent = S.cache.size;
+  $("bytes").textContent = fmtBytes(S.bytes);
+  $("lodmin").textContent = lods.length ? "LOD" + Math.min(...lods) : "—";
+  $("lodmax").textContent = visLods.length ? "LOD" + Math.max(...visLods) : "—";
+  $("active").textContent = S.inflight.size;
+  $("pending").textContent = S.queue.length;
+  $("hits").textContent = S.hits;
+  $("fps").textContent = fps;
+}
+
+addEventListener("resize", () => {
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+boot();
+requestAnimationFrame(loop);
+</script>
+
+<!-- shared page switcher (kept identical in roi585.html and volume.html) -->
+<select id="pageNav" aria-label="switch page" style="position:fixed;bottom:8px;right:10px;z-index:9999;font:12px/1.3 ui-monospace,Menlo,Consolas,monospace;color:#cfe0ff;background:rgba(22,35,58,.95);border:1px solid #2c405e;border-radius:6px;padding:4px 8px;cursor:pointer;">
+  <option value="/">3D streaming</option>
+  <option value="/roi">ROI center picker</option>
+  <option value="/dashboard">stream dashboard</option>
+</select>
+<script>
+(function(){var s=document.getElementById("pageNav");
+ var p=location.pathname.replace(/\/+$/,"")||"/";
+ for(var i=0;i<s.options.length;i++){if(s.options[i].value===p){s.selectedIndex=i;break;}}
+ s.addEventListener("change",function(){if(s.value!==p)location.href=s.value;});})();
+</script>
+</body>
+</html>

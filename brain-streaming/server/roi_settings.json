@@ -1,0 +1,9 @@
+{
+  "size": 2048,
+  "mode": "region",
+  "opacity": 0.6,
+  "quality": 160,
+  "center": { "fx": 0.5, "fy": 0.5, "fz": 0.5 },
+  "roiView": { "yaw": 0.5, "pitch": 0.3, "zoom": 1.0 },
+  "pickerView": { "yaw": 0.6, "pitch": 0.35, "zoom": 1.0 }
+}

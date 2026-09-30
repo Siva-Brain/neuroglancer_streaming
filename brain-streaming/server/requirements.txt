@@ -1,0 +1,15 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+numpy>=1.24
+pydantic>=2.5
+# real-Zarr edition (app_zarr.py):
+requests>=2.28
+numcodecs>=0.11        # blosc/zstd decode of Zarr v3 shards
+# optional, only for server/tools diagnostic images:
+# pillow>=9
+#
+# --- OPTIONAL A100 / GPU acceleration (app_zarr.py --gpu) ---------------------
+# The server runs fine on CPU without these (gpu.available=false). To enable
+# GPU processing + server-side resample on a CUDA 12 box (see docs/deployment.md):
+#   pip install --user cupy-cuda12x==13.3.0 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12
+# then launch via ./run_dgx.sh (it wires up CUDA_HOME / LD_LIBRARY_PATH).
