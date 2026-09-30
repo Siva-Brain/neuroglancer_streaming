@@ -66,6 +66,9 @@ PROTOCOL_DOC = {
         "DATASET_INFO":  "GET  /api/dataset/info                 -> {blocks:[...]}",
         "VIEW_UPDATE":   "POST /api/view            (ViewRequest, camera in block-local mm) -> ViewResponse",
         "REQUEST_CHUNK": "GET  /api/chunk/{chunk_id}?channels=0,3&block=<id> -> binary BVX2",
+        "BLOCK_VOLUME":  "GET  /api/block_volume?block=<id>&level=<n>[&cap=512] -> binary BVX3 "
+                         "(one merged, tissue-cropped, colour+opacity-baked RGBA volume for the "
+                         "whole block + a low-res occupancy volume; SRD low-jitter path)",
         "REQUEST_MANY":  "POST /api/chunks/request?block=<id>  (chunk_ids) -> per-chunk status",
         "CANCEL_CHUNK":  "POST /api/chunks/cancel   (chunk_ids)",
         "PREFETCH":      "POST /api/prefetch?block=<id>        (chunk_ids) -> warms DGX cache",
@@ -76,4 +79,9 @@ PROTOCOL_DOC = {
         "magic 'BVX2'(4) | u8 level | u8 n_channels | u16 reserved | i32 z0,y0,x0 "
         "| u16 dz,dy,dx | f32[6] world_bbox_mm(xmin,ymin,zmin,xmax,ymax,zmax) "
         "| u8[dz*dy*dx*n_channels] voxels (z,y,x,c order). Header = 50 bytes.",
+    "binary_block_volume_format":
+        "magic 'BVX3'(4) | u8 level | u8 n_channels(=4 RGBA) | u16 reserved | i32 z0,y0,x0 "
+        "| u16 dz,dy,dx | f32[6] world_bbox_mm | u8[dz*dy*dx*4] rgba (z,y,x,c order) "
+        "| u16 oz,oy,ox | u8 occ_block | u8 reserved | u8[oz*oy*ox] occupancy. "
+        "rgba = baked colour(rgb)+opacity(a); occupancy = max opacity per occ_block^3 cell.",
 }

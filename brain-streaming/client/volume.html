@@ -74,6 +74,7 @@
 <canvas id="gl"></canvas>
 <div id="hud">
   <h1>DGX BRAIN VOLUME</h1>
+  <div class="r"><span class="k">Brain</span><span class="v"><select id="brainSel" style="font:inherit;color:#cfe0ff;background:rgba(22,35,58,.95);border:1px solid #2c405e;border-radius:5px;padding:2px 6px;cursor:pointer;max-width:180px;pointer-events:auto"></select></span></div>
   <div class="r"><span class="k">Connection</span><span class="v" id="conn"><span class="dot wait"></span>…</span></div>
   <div class="r"><span class="k">Server</span><span class="v" id="server">—</span></div>
   <hr>
@@ -126,6 +127,12 @@
     <div class="vrow"><label>lighting</label><input id="vLight" type="range" min="0" max="1" step="0.02"><span class="val" id="lLight"></span></div>
     <div class="vrow"><label>quality</label><input id="vQual" type="range" min="32" max="256" step="16"><span class="val" id="lQual"></span></div>
     <div class="vrow chk"><input id="vJitter" type="checkbox"><label for="vJitter">smooth (ray jitter)</label></div>
+
+    <div id="labelsGroup" hidden>
+      <div class="glabel">segmentation labels</div>
+      <div class="vrow chk"><input id="vLabels" type="checkbox"><label for="vLabels">show label overlay <span id="lLabelSt" style="color:#5f6b82"></span></label></div>
+      <div class="vrow"><label>lbl opacity</label><input id="vLabelA" type="range" min="0.05" max="3" step="0.05"><span class="val" id="lLabelA"></span></div>
+    </div>
   </div>
 </div>
 
@@ -163,6 +170,7 @@ in vec3 vLocal; out vec4 frag;
 uniform vec3 uCamLocal, uTint; uniform sampler3D uVol;
 uniform float uAlpha; uniform int uSteps;
 uniform int uColorMode;    // 0=grayscale 1=per-block tint 2=colormap
+uniform int uRGB;          // 0 gray+mask (RG8) 1 fused colour (RGB8)
 uniform int uCmap;         // 0 bone 1 gray 2 hot 3 viridis (colormap mode)
 uniform float uWL, uWW;    // transfer-function window level / width (contrast)
 uniform float uThresh;     // density floor (cuts haze)
@@ -174,7 +182,9 @@ vec2 hitBox01(vec3 o, vec3 d){
   vec3 tn=min(t0,t1), tf=max(t0,t1);
   return vec2(max(max(tn.x,tn.y),tn.z), min(min(tf.x,tf.y),tf.z));
 }
-float raw(vec3 p){ vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }   // density*tissue
+float raw(vec3 p){
+  if(uRGB==1){ vec3 c=texture(uVol,p).rgb; return 1.0-min(min(c.r,c.g),c.b); } // tissue=departure from white
+  vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }                            // density*tissue
 float tf(float v){ return clamp((v-(uWL-uWW*0.5))/max(uWW,1e-4),0.0,1.0); }
 vec3 grad(vec3 p){ return vec3(
   raw(p+vec3(uTexel.x,0,0))-raw(p-vec3(uTexel.x,0,0)),
@@ -200,7 +210,8 @@ void main(){
     float v=tf(v0); if(v<=0.0) continue;
     float a=clamp(v*uAlpha*dt*40.0,0.0,1.0);
     vec3 col;
-    if(uColorMode==1)      col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
+    if(uRGB==1)            col=texture(uVol,p).rgb;                            // true fused colour
+    else if(uColorMode==1) col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
     else if(uColorMode==2) col=cmap(v);                                        // colormap
     else                   col=vec3(0.06+0.94*v);                              // grayscale
     if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);
@@ -222,8 +233,38 @@ if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfo
 const U = n => gl.getUniformLocation(prog,n);
 const loc = {vp:U("uViewProj"),model:U("uModel"),camL:U("uCamLocal"),tint:U("uTint"),
              vol:U("uVol"),alpha:U("uAlpha"),steps:U("uSteps"),
-             colorMode:U("uColorMode"),cmap:U("uCmap"),wl:U("uWL"),ww:U("uWW"),
+             colorMode:U("uColorMode"),rgb:U("uRGB"),cmap:U("uCmap"),wl:U("uWL"),ww:U("uWW"),
              thresh:U("uThresh"),light:U("uLight"),jitter:U("uJitter"),texel:U("uTexel")};
+
+// ---------- label-overlay program (one merged RGBA volume drawn per brain) ----
+// The DGX bakes the segmentation into RGBA (rgb=region colour, a=labelled?). The
+// overlay is one box raymarch composited over the tissue, toggled on/off.
+const LVERT = `#version 300 es
+layout(location=0) in vec3 aPos; uniform mat4 uViewProj, uModel; out vec3 vLocal;
+void main(){ vLocal=aPos; gl_Position=uViewProj*uModel*vec4(aPos,1.0); }`;
+const LFRAG = `#version 300 es
+precision highp float; precision highp sampler3D;
+in vec3 vLocal; out vec4 frag;
+uniform vec3 uCamLocal; uniform sampler3D uVol; uniform int uSteps; uniform float uAlpha;
+vec2 hitBox01(vec3 o,vec3 d){ vec3 inv=1.0/d; vec3 t0=(vec3(0.0)-o)*inv,t1=(vec3(1.0)-o)*inv;
+  vec3 tn=min(t0,t1),tf=max(t0,t1); return vec2(max(max(tn.x,tn.y),tn.z),min(min(tf.x,tf.y),tf.z)); }
+void main(){
+  vec3 d=normalize(vLocal-uCamLocal); vec2 t=hitBox01(uCamLocal,d); t.x=max(t.x,0.0);
+  if(t.y<=t.x){ discard; }
+  int N=uSteps; float dt=(t.y-t.x)/float(N);
+  vec3 outC=vec3(0.0); float outA=0.0;
+  for(int i=0;i<512;i++){ if(i>=N) break;
+    vec4 v=texture(uVol, uCamLocal+d*(t.x+(float(i)+0.5)*dt));   // rgb=colour, a=labelled
+    float a=clamp(v.a*uAlpha*dt*40.0,0.0,1.0);
+    if(a>0.0){ outC+=(1.0-outA)*a*v.rgb; outA+=(1.0-outA)*a; if(outA>0.985) break; } }
+  frag=vec4(outC,outA); }`;
+const progL = gl.createProgram();
+gl.attachShader(progL,sh(gl.VERTEX_SHADER,LVERT)); gl.attachShader(progL,sh(gl.FRAGMENT_SHADER,LFRAG));
+gl.linkProgram(progL);
+if(!gl.getProgramParameter(progL,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(progL));
+const locL = {vp:gl.getUniformLocation(progL,"uViewProj"),model:gl.getUniformLocation(progL,"uModel"),
+              camL:gl.getUniformLocation(progL,"uCamLocal"),vol:gl.getUniformLocation(progL,"uVol"),
+              steps:gl.getUniformLocation(progL,"uSteps"),alpha:gl.getUniformLocation(progL,"uAlpha")};
 
 // ---------- global visualization params (control panel) ----------
 const VIZ_KEY="brain-viz-v1";
@@ -236,6 +277,8 @@ const viz = {
   quality:80,    // -> uSteps
   light:0.0,     // gradient shading (off by default: brick borders can seam)
   jitter:true,
+  labelsOn:false,   // segmentation overlay on/off (only brains that have one)
+  labelAlpha:1.0,   // segmentation overlay opacity multiplier
 };
 try{ const s=JSON.parse(localStorage.getItem(VIZ_KEY)||"null"); if(s) Object.assign(viz,s); }catch(e){}
 function saveViz(){ try{ localStorage.setItem(VIZ_KEY,JSON.stringify(viz)); }catch(e){} }
@@ -259,6 +302,8 @@ const S = {
   useNg:false,                          // anatomical (Neuroglancer) placement on/off
   pivot:"center",                       // "origin" | "center" (grid-center = coherent row)
   haveNg:false,                         // any block has a server matrix
+  labelInfo:null,                       // /api/dataset/info .labels for current brain (or null)
+  label:null,                           // loaded overlay {tex,bmin,bmax,dx,dy,dz,level,loading}
 };
 // Block = { id, info, extentMm:[z,y,x], levelVox:{}, nBricks, tint:[r,g,b],
 //           visible:bool, transform:{t,r,s},
@@ -298,9 +343,17 @@ function loadSaved(){
 function idNudge(){ return {t:[0,0,0], r:[0,0,0], s:[1,1,1]}; }
 
 // ---------- networking ----------
-async function getInfo(){ return (await fetch(`${API}/api/dataset/info`)).json(); }
-async function getTransforms(){
-  try{ return (await fetch(`${API}/api/transforms`)).json(); }
+const BRAIN_KEY="brain-current-v1";
+async function getBrains(){
+  try{ return (await fetch(`${API}/api/brains`)).json(); }catch(e){ return {brains:[]}; }
+}
+async function getInfo(brain){
+  const q=brain?`?brain=${encodeURIComponent(brain)}`:"";
+  return (await fetch(`${API}/api/dataset/info${q}`)).json();
+}
+async function getTransforms(brain){
+  const q=brain?`?brain=${encodeURIComponent(brain)}`:"";
+  try{ return (await fetch(`${API}/api/transforms${q}`)).json(); }
   catch(e){ return {transforms:{}}; }
 }
 async function postView(blk,cam){
@@ -325,8 +378,49 @@ function upload3D(b){
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
-  gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8,b.dx,b.dy,b.dz,0,gl.RG,gl.UNSIGNED_BYTE,b.vox);
+  if(b.nch>=3) gl.texImage3D(gl.TEXTURE_3D,0,gl.RGB8,b.dx,b.dy,b.dz,0,gl.RGB,gl.UNSIGNED_BYTE,b.vox);
+  else         gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8, b.dx,b.dy,b.dz,0,gl.RG, gl.UNSIGNED_BYTE,b.vox);
   return tex;
+}
+
+// ---------- segmentation label overlay (one merged RGBA BVX3 volume) ----------
+function parseBVX3(buf){                                // BVX3: rgba volume + occupancy
+  const dv=new DataView(buf);
+  const level=dv.getUint8(4), nch=dv.getUint8(5);
+  const dz=dv.getUint16(20,true),dy=dv.getUint16(22,true),dx=dv.getUint16(24,true);
+  const bmin=[dv.getFloat32(26,true),dv.getFloat32(30,true),dv.getFloat32(34,true)];
+  const bmax=[dv.getFloat32(38,true),dv.getFloat32(42,true),dv.getFloat32(46,true)];
+  const rgba=new Uint8Array(buf,50,dz*dy*dx*4);        // trailer/occupancy ignored here
+  return {level,nch,dz,dy,dx,bmin,bmax,rgba};
+}
+function uploadRGBA(b){
+  const tex=gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D,tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.RGBA8,b.dx,b.dy,b.dz,0,gl.RGBA,gl.UNSIGNED_BYTE,b.rgba);
+  return tex;
+}
+async function loadLabels(){
+  if(!S.labelInfo || (S.label && (S.label.tex||S.label.loading))) return;
+  S.label = {loading:true, tex:null};
+  const st=$("lLabelSt"); if(st) st.textContent="(loading…)";
+  try{
+    const lvl=S.labelInfo.default_level;
+    // cap keeps the overlay a browser-friendly Texture3D (regions are broad, so a
+    // coarse overlay reads fine); the server strides labels by NEAREST to this.
+    const buf=await (await fetch(`${API}/api/label_volume?brain=${encodeURIComponent(S_current_brain||"")}&level=${lvl}&cap=256`)).arrayBuffer();
+    const b=parseBVX3(buf);
+    S.label={tex:uploadRGBA(b),bmin:b.bmin,bmax:b.bmax,dx:b.dx,dy:b.dy,dz:b.dz,level:b.level,loading:false};
+    if(st) st.textContent=`(L${b.level} ${b.dx}×${b.dy}×${b.dz})`;
+  }catch(e){ console.warn("labels",e); S.label=null; if(st) st.textContent="(failed)"; }
+}
+function clearLabels(){
+  if(S.label&&S.label.tex) gl.deleteTexture(S.label.tex);
+  S.label=null; const st=$("lLabelSt"); if(st) st.textContent="";
 }
 
 // ---------- cache / global pump ----------
@@ -360,7 +454,8 @@ async function fetchBrick(blk,zi,level,k,gk){
   S.inflight.add(gk); S.requested++;
   const cid=`L${level}.${zi}.0.0.0`;
   try{
-    const res=await fetch(`${API}/api/chunk/${cid}?channels=${CHANNELS}&block=${blk.id}`);
+    const chans=blk.rgb?"0,1,2":CHANNELS;
+    const res=await fetch(`${API}/api/chunk/${cid}?channels=${chans}&block=${blk.id}`);
     const buf=await res.arrayBuffer();
     S.received++; S.bytes+=buf.byteLength; S.bytesWin+=buf.byteLength; blk.have.add(k);
     const b=parseBrick(buf);
@@ -486,10 +581,35 @@ function draw(now){
     const cl=vec3.transformMat4(vec3.create(), cp, modelInv);   // camera in unit-cube space
     gl.uniformMatrix4fv(loc.model,false,model);
     gl.uniform3fv(loc.camL,cl);
+    gl.uniform1i(loc.rgb,blk.rgb?1:0);
     gl.uniform3fv(loc.tint,blk.tint);
     gl.uniform3f(loc.texel,1/Math.max(1,b.dx),1/Math.max(1,b.dy),1/Math.max(1,b.dz));
     gl.bindTexture(gl.TEXTURE_3D,b.tex);
     gl.drawArrays(gl.TRIANGLES,0,36);
+  }
+
+  // label overlay: one merged RGBA box drawn over the tissue (same placement as
+  // the brain's block), composited last so regions read on top.
+  if(viz.labelsOn && S.label && S.label.tex){
+    const blk=S.blocks.values().next().value;                 // single-block brains (hb02)
+    if(blk){
+      gl.useProgram(progL);
+      gl.uniformMatrix4fv(locL.vp,false,vp);
+      gl.uniform1i(locL.vol,0); gl.uniform1i(locL.steps,viz.quality);
+      gl.uniform1f(locL.alpha,viz.labelAlpha);
+      const L=S.label;
+      mat4.identity(tt);
+      mat4.translate(tt,tt,L.bmin);
+      mat4.scale(tt,tt,[L.bmax[0]-L.bmin[0],L.bmax[1]-L.bmin[1],L.bmax[2]-L.bmin[2]]);
+      mat4.multiply(model, blk.matrix, tt);
+      mat4.invert(modelInv, model);
+      const cl=vec3.transformMat4(vec3.create(), cp, modelInv);
+      gl.uniformMatrix4fv(locL.model,false,model);
+      gl.uniform3fv(locL.camL,cl);
+      gl.bindTexture(gl.TEXTURE_3D,L.tex);
+      gl.drawArrays(gl.TRIANGLES,0,36);
+      gl.useProgram(prog);                                    // restore for next frame's bricks
+    }
   }
 
   frames++;
@@ -624,6 +744,8 @@ function syncViz(){
   set("vLight",viz.light); $("lLight").textContent=viz.light.toFixed(2);
   set("vQual",viz.quality); $("lQual").textContent=viz.quality;
   set("vCmap",viz.cmap); $("vJitter").checked=viz.jitter;
+  const lc=$("vLabels"); if(lc) lc.checked=viz.labelsOn;
+  set("vLabelA",viz.labelAlpha); if($("lLabelA")) $("lLabelA").textContent=viz.labelAlpha.toFixed(2);
   [...document.querySelectorAll("#vColorMode button")].forEach(b=>b.classList.toggle("on",+b.dataset.cm===viz.colorMode));
   $("vCmapRow").style.display = viz.colorMode===2 ? "flex" : "none";
 }
@@ -634,18 +756,36 @@ bindViz("vDensity","density"); bindViz("vLight","light");
 bindViz("vQual","quality",v=>parseInt(v,10));
 $("vCmap").addEventListener("change",()=>{ viz.cmap=+$("vCmap").value; saveViz(); });
 $("vJitter").addEventListener("change",()=>{ viz.jitter=$("vJitter").checked; saveViz(); });
+$("vLabels").addEventListener("change",()=>{ viz.labelsOn=$("vLabels").checked; saveViz();
+  if(viz.labelsOn) loadLabels(); });
+bindViz("vLabelA","labelAlpha");
 [...document.querySelectorAll("#vColorMode button")].forEach(b=>
   b.addEventListener("click",()=>{ viz.colorMode=+b.dataset.cm; syncViz(); saveViz(); }));
 $("vizTitle").addEventListener("click",()=>{ const p=$("viz"),c=p.classList.toggle("collapsed");
   $("vizTitle").querySelector(".caret").textContent=c?"▸":"▾"; });
 syncViz();
 
-// ---------- boot ----------
-(async function(){
-  $("server").textContent=location.host;
+// ---------- brain loading (called on boot + whenever the selector changes) ----
+let S_current_brain=null;
+function clearBrain(){
+  for(const b of S.blocks.values())
+    for(const br of b.bricks.values()) if(br.tex) gl.deleteTexture(br.tex);
+  S.blocks.clear(); S.order.length=0; S.inflight.clear();
+  S.requested=0; S.received=0; S.bytes=0; S.bytesWin=0;
+  clearLabels();                                      // drop the old brain's overlay
+  lastKey="";                                         // force maybeView to re-issue
+}
+async function loadBrain(brainId){
+  S_current_brain=brainId;
+  try{ localStorage.setItem(BRAIN_KEY,brainId||""); }catch(e){}
+  $("conn").innerHTML='<span class="dot wait"></span>LOADING…';
+  clearBrain();
   try{
-    const [info, xf] = await Promise.all([getInfo(), getTransforms()]);
+    const [info, xf] = await Promise.all([getInfo(brainId), getTransforms(brainId)]);
     const blockInfos = info.blocks || [ {block_id:"0", ...info} ];  // single-block fallback
+    // segmentation overlay availability for this brain
+    S.labelInfo = (info.labels && info.labels.available) ? info.labels : null;
+    $("labelsGroup").hidden = !S.labelInfo;
     const saved=loadSaved();
     const ngAll = (xf && xf.transforms) || {};
     S.haveNg = Object.keys(ngAll).length>0;
@@ -659,6 +799,7 @@ syncViz();
       const ng=ngAll[bi.block_id];
       const blk={
         id:bi.block_id, info:bi,
+        rgb: bi.render==="rgb",                         // fused colour vs gray+mask
         extentMm:bi.extent_mm,                          // (z,y,x) mm
         levelVox:{}, nBricks:0,
         tint:PALETTE[idx%PALETTE.length],
@@ -687,7 +828,29 @@ syncViz();
       });
     }
     pump();
+    if(S.labelInfo && viz.labelsOn) loadLabels();     // restore overlay if it was on
   }catch(e){ $("conn").innerHTML='<span class="dot bad"></span>OFFLINE'; console.error(e); }
+}
+
+// ---------- boot ----------
+(async function(){
+  $("server").textContent=location.host;
+  const bs = await getBrains();
+  const brains = (bs && bs.brains) || [];
+  const sel = $("brainSel");
+  let start = bs.default;
+  try{ const saved=localStorage.getItem(BRAIN_KEY);
+       if(saved && brains.some(b=>b.id===saved)) start=saved; }catch(e){}
+  if(brains.length){
+    sel.innerHTML="";
+    brains.forEach(b=>{ const o=document.createElement("option");
+      o.value=b.id; o.textContent=b.label||b.id; sel.appendChild(o); });
+    sel.value=start||brains[0].id;
+    sel.addEventListener("change",()=>loadBrain(sel.value));
+  }else{
+    sel.innerHTML='<option>—</option>'; sel.disabled=true;   // single-brain server
+  }
+  await loadBrain(brains.length ? sel.value : undefined);
   requestAnimationFrame(draw);
 })();
 </script>

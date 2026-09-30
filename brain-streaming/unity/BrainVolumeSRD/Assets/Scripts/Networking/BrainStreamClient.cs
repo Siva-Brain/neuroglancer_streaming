@@ -17,7 +17,8 @@ namespace BrainVolume
     }
     // One block of the multi-block dataset (each is a physical brain slab).
     [Serializable] public class BlockInfo {
-        public string block_id; public string name; public string dtype;
+        public string block_id; public string brain; public string render;   // "gray_mask"|"rgb"
+        public string name; public string dtype;
         public int channels; public int finest_level; public int coarsest_level;
         public int min_streamable_level; public float[] extent_mm;   // (z,y,x)
         public LevelDto[] levels; public string[] baseline_chunks;
@@ -27,6 +28,14 @@ namespace BrainVolume
     [Serializable] public class DatasetInfo {
         public BlockInfo[] blocks;
         public string name; public float[] extent_mm;   // legacy top-level mirror (unused)
+    }
+    // /api/brains -> { brains:[{id,label,kind,render,blocks[]}], default }.
+    [Serializable] public class BrainDto {
+        public string id; public string label; public string kind; public string render;
+        public string[] blocks;
+    }
+    [Serializable] public class BrainsResponse {
+        public BrainDto[] brains; public string @default;   // @default: "default" is a C# keyword
     }
     // /api/transforms -> { space, transforms:{id:{...}}, list:[{block,matrix,...}] }.
     // JsonUtility can't parse the id-keyed dict, so we read the `list` array.
@@ -64,16 +73,26 @@ namespace BrainVolume
 
         public BrainStreamClient(string baseUrl) { BaseUrl = baseUrl.TrimEnd('/'); }
 
-        public async Task<DatasetInfo> GetDatasetInfoAsync()
+        static string BrainQ(string brain) =>
+            string.IsNullOrEmpty(brain) ? "" : "?brain=" + UnityWebRequest.EscapeURL(brain);
+
+        /// <summary>GET /api/brains -> the selectable brains (id + label + blocks).</summary>
+        public async Task<BrainsResponse> GetBrainsAsync()
         {
-            var txt = await GetTextAsync($"{BaseUrl}/api/dataset/info");
+            var txt = await GetTextAsync($"{BaseUrl}/api/brains");
+            return txt != null ? JsonUtility.FromJson<BrainsResponse>(txt) : null;
+        }
+
+        public async Task<DatasetInfo> GetDatasetInfoAsync(string brain = null)
+        {
+            var txt = await GetTextAsync($"{BaseUrl}/api/dataset/info{BrainQ(brain)}");
             Connected = txt != null;
             return txt != null ? JsonUtility.FromJson<DatasetInfo>(txt) : null;
         }
 
-        public async Task<TransformsResponse> GetTransformsAsync()
+        public async Task<TransformsResponse> GetTransformsAsync(string brain = null)
         {
-            var txt = await GetTextAsync($"{BaseUrl}/api/transforms");
+            var txt = await GetTextAsync($"{BaseUrl}/api/transforms{BrainQ(brain)}");
             return txt != null ? JsonUtility.FromJson<TransformsResponse>(txt) : null;
         }
 
@@ -96,6 +115,24 @@ namespace BrainVolume
             var body = JsonUtility.ToJson(dto);
             var txt = await PostTextAsync($"{BaseUrl}/api/view", body);
             return txt != null ? JsonUtility.FromJson<ViewResponse>(txt) : null;
+        }
+
+        /// <summary>GET /api/block_volume -> one merged RGBA volume + occupancy (BVX3).</summary>
+        public async Task<BlockVolumeData> GetBlockVolumeAsync(string block, int level, CancellationToken ct)
+        {
+            var url = $"{BaseUrl}/api/block_volume?block={block}&level={level}";
+            float t0 = Time.realtimeSinceStartup;
+            using var req = UnityWebRequest.Get(url);
+            var op = req.SendWebRequest();
+            while (!op.isDone) { if (ct.IsCancellationRequested) { req.Abort(); return null; } await Task.Yield(); }
+            if (req.result != UnityWebRequest.Result.Success)
+            {
+                Debug.LogWarning($"[BrainStreamClient] GET {url} FAILED: result={req.result} " +
+                                 $"code={req.responseCode} error='{req.error}'");
+                return null;
+            }
+            LastLatencyMs = (Time.realtimeSinceStartup - t0) * 1000f;
+            return BlockVolumeData.TryParse(req.downloadHandler.data, out var v) ? v : null;
         }
 
         /// <summary>REQUEST_CHUNK for one block -> decoded BrainChunk. Cancellable.</summary>

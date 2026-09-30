@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>585 ROI · pick center + LODs</title>
+<title>Brain ROI · pick center + LODs</title>
 <style>
   :root{color-scheme:dark;}
   html,body{margin:0;height:100%;background:#05070c;overflow:hidden;
@@ -60,7 +60,9 @@
 <div id="labels"></div>
 <div id="divider"></div>
 <div id="top">
-  <b>585</b>
+  <b>brain</b>
+  <select id="brainSel" title="which brain to view" style="font:inherit;color:#cfe0ff;background:rgba(22,35,58,.95);border:1px solid #2c405e;border-radius:5px;padding:1px 5px;cursor:pointer"></select>
+  <span id="blkId" title="block that owns the picked center" style="color:#f5c451;font-size:11px">—</span>
   <label>size <select id="selSize">
     <option>512</option><option>1024</option><option selected>2048</option><option>4096</option>
   </select></label>
@@ -76,7 +78,7 @@
   <span id="saved">saved ✓</span>
   <span id="conn" class="st">connecting…</span>
 </div>
-<div id="hint">LEFT · pick center: drag crosshair on a slice · scroll = through-plane slice · release to fetch &nbsp;|&nbsp; RIGHT · L0·L2·L4·L7: drag = rotate all · scroll = zoom all (synced)</div>
+<div id="hint">LEFT · whole brain — pick center: drag crosshair on a slice · scroll = through-plane slice · release to fetch &nbsp;|&nbsp; RIGHT · L0·L2·L4·L7 ROI of the owning block: drag = rotate all · scroll = zoom all (synced)</div>
 
 <div id="panel">
   <h4 id="pTitle">visualization <span class="caret">▾</span></h4>
@@ -120,10 +122,20 @@
 <script>
 const {mat4, vec3} = glMatrix;
 const API = location.origin;
-const BLOCK = "585";
+let BRAIN = "Stroke_1";            // whole-brain reassembly served by /api/brain (selectable)
+let VOL_RGB = false;               // current brain renders fused RGB (vs gray+mask)
+const BRAIN_KEY = "roi585.brain";
+const BRAIN_CAP = 256;             // world-grid resolution of the picker volume
 const LEVELS = [0, 2, 4, 7];       // the four ROI-display panels (right pane)
-const BROWSE_LEVEL = 4;            // "L4 as volume": level browsed in the picker
-const BROWSE_SIZE = 100000000;     // huge -> server clamps to the whole slab
+
+// ---- whole-brain placement (filled by loadPicker) ----
+// worldMin/worldSpan: the RAS-mm AABB of the picker grid, so a picked normalized
+// (fx,fy,fz) maps to a world point; blockPlac: per-block inverse matrix + extent
+// used to find which block owns that world point and its in-block (fx,fy).
+let worldMin = [0,0,0], worldSpan = [1,1,1];
+let blockPlac = {};                // bid -> {Minv:mat4, ext:[Ex,Ey,Ez]}
+// resolved from the current pick: which block to fetch the ROI from + its center
+let activeBlock = null, activeFx = 0.5, activeFy = 0.5, activeInside = false;
 
 const canvas = document.getElementById("gl");
 const gl = canvas.getContext("webgl2", {antialias:true});
@@ -132,7 +144,7 @@ if(!gl){ document.getElementById("conn").textContent="NO WEBGL2"; }
 // ---- normalized ROI center in the slab plane (0.5,0.5 = geometric middle) ----
 // fx,fy drive the fetch; fz is only the through-plane slice shown in the picker.
 let fx = 0.5, fy = 0.5, fz = 0.5;
-let lastFx = 0.5, lastFy = 0.5;    // last center actually fetched
+let lastFx = 0.5, lastFy = 0.5, lastFz = 0.5;    // last center actually fetched
 
 // ---- render parameters (driven by the control panel) ----
 // opacity/quality mirror the top-bar sliders; the rest are the new controls.
@@ -161,12 +173,15 @@ uniform float uThresh;   // density floor (cuts the low haze)
 uniform float uIso;      // iso value for isosurface mode
 uniform float uLight;    // gradient-shading strength 0..1
 uniform int uCmap;       // 0=bone 1=gray 2=hot 3=viridis
+uniform int uRGB;        // 0=gray+mask (RG8) 1=fused colour (RGB8)
 uniform vec3 uTexel;     // 1/dims, for gradient central differences
 uniform float uJitter;   // 0/1 dithered ray start (kills step banding)
 vec2 hit(vec3 o,vec3 d){ vec3 iv=1.0/d; vec3 a=(vec3(0.0)-o)*iv,b=(vec3(1.0)-o)*iv;
   vec3 n=min(a,b),f=max(a,b); return vec2(max(max(n.x,n.y),n.z),min(min(f.x,f.y),f.z)); }
 // scalar field = signal density weighted by tissue-ness (matches the slice view)
-float raw(vec3 p){ vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }
+float raw(vec3 p){
+  if(uRGB==1){ vec3 c=texture(uVol,p).rgb; return 1.0-min(min(c.r,c.g),c.b); } // tissue=departure from white
+  vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }
 // window/level transfer -> contrast-stretched [0,1]
 float tf(float v){ return clamp((v-(uWL-uWW*0.5))/max(uWW,1e-4),0.0,1.0); }
 vec3 grad(vec3 p){ return vec3(
@@ -207,7 +222,7 @@ void main(){
     float v0=raw(p); if(v0<uThresh) continue;
     float v=tf(v0); if(v<=0.0) continue;
     float a=1.0-exp(-v*uOpacity*dt*60.0);
-    vec3 c=cmap(v);
+    vec3 c=(uRGB==1)?texture(uVol,p).rgb:cmap(v);   // true fused colour vs colormap
     if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);
       vec3 n=gm>1e-4?-g/gm:vec3(0.0); float diff=max(dot(n,-d),0.0);
       c*=mix(1.0,0.2+0.9*diff,uLight*clamp(gm*8.0,0.0,1.0)); }
@@ -226,6 +241,7 @@ precision highp float; precision highp sampler3D;
 in vec2 vUv; out vec4 frag;
 uniform sampler3D uVol; uniform int uAxis; uniform float uSlice; uniform int uReady;
 uniform float uWL,uWW;                       // shared window/level (same as volume)
+uniform int uRGB;                            // 0=gray+mask 1=fused colour
 void main(){
   if(uReady==0){ frag=vec4(0.02,0.03,0.05,1.0); return; }
   float u=vUv.x, w=1.0-vUv.y;               // screen top -> plane origin
@@ -233,6 +249,7 @@ void main(){
   if(uAxis==0)      p=vec3(u, w, uSlice);    // axial   XY
   else if(uAxis==1) p=vec3(u, uSlice, w);    // coronal XZ
   else              p=vec3(uSlice, u, w);    // sagittal YZ
+  if(uRGB==1){ frag=vec4(texture(uVol,p).rgb,1.0); return; }  // fused colour, shown as-is
   vec2 s=texture(uVol,p).rg; float tis=1.0-s.r; float dn=s.g*tis;
   float g=clamp((dn-(uWL-uWW*0.5))/max(uWW,1e-4), 0.0, 1.0);
   frag=vec4(vec3(g),1.0); }`;
@@ -250,10 +267,12 @@ const L={vp:gl.getUniformLocation(prog,"uViewProj"),model:gl.getUniformLocation(
   ww:gl.getUniformLocation(prog,"uWW"),thresh:gl.getUniformLocation(prog,"uThresh"),
   iso:gl.getUniformLocation(prog,"uIso"),light:gl.getUniformLocation(prog,"uLight"),
   cmap:gl.getUniformLocation(prog,"uCmap"),texel:gl.getUniformLocation(prog,"uTexel"),
+  rgb:gl.getUniformLocation(prog,"uRGB"),
   jitter:gl.getUniformLocation(prog,"uJitter")};
 const sprog=link(SVERT,SFRAG);
 const SL={vol:gl.getUniformLocation(sprog,"uVol"),axis:gl.getUniformLocation(sprog,"uAxis"),
   slice:gl.getUniformLocation(sprog,"uSlice"),ready:gl.getUniformLocation(sprog,"uReady"),
+  rgb:gl.getUniformLocation(sprog,"uRGB"),
   wl:gl.getUniformLocation(sprog,"uWL"),ww:gl.getUniformLocation(sprog,"uWW")};
 
 // unit cube for raymarch
@@ -289,7 +308,7 @@ const views = [
   {pane:"L",g:0,kind:"slice",axis:0,name:"axial"},
   {pane:"L",g:1,kind:"slice",axis:1,name:"coronal"},
   {pane:"L",g:2,kind:"slice",axis:2,name:"sagittal"},
-  {pane:"L",g:3,kind:"vol",  src:"picker",name:"L"+BROWSE_LEVEL+" volume"},
+  {pane:"L",g:3,kind:"vol",  src:"picker",name:"brain volume"},
   {pane:"R",g:0,kind:"vol",  level:0},
   {pane:"R",g:1,kind:"vol",  level:2},
   {pane:"R",g:2,kind:"vol",  level:4},
@@ -321,7 +340,8 @@ function upload(b){
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   for(const p of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T,gl.TEXTURE_WRAP_R])
     gl.texParameteri(gl.TEXTURE_3D,p,gl.CLAMP_TO_EDGE);
-  gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8,b.dx,b.dy,b.dz,0,gl.RG,gl.UNSIGNED_BYTE,b.vox);
+  if(b.nch>=3){ gl.texImage3D(gl.TEXTURE_3D,0,gl.RGB8,b.dx,b.dy,b.dz,0,gl.RGB,gl.UNSIGNED_BYTE,b.vox); VOL_RGB=true; }
+  else        { gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8, b.dx,b.dy,b.dz,0,gl.RG, gl.UNSIGNED_BYTE,b.vox); VOL_RGB=false; }
   return t;
 }
 // Camera distance so the box's bounding sphere fully fits the pane at ANY
@@ -420,9 +440,12 @@ canvas.addEventListener("wheel",e=>{
   e.preventDefault();
   if(v.kind==="slice"){                              // scroll = move through-plane slice
     const step=Math.sign(e.deltaY)*0.02;
+    // every through-plane move can change which block owns the world point, so
+    // all three axes mark the pick dirty (fz matters now that blocks are stacked)
     if(v.axis===0) fz=Math.min(1,Math.max(0,fz+step));
-    else if(v.axis===1){ fy=Math.min(1,Math.max(0,fy+step)); centerDirty=true; }
-    else { fx=Math.min(1,Math.max(0,fx+step)); centerDirty=true; }
+    else if(v.axis===1) fy=Math.min(1,Math.max(0,fy+step));
+    else fx=Math.min(1,Math.max(0,fx+step));
+    centerDirty=true;
     scheduleCommit();                                // debounce -> fetch after scrolling stops
   } else {                                           // scroll = zoom (shared across the 4 ROI panels)
     const cam = v.src==="picker" ? pickerCam : roiCam;
@@ -437,7 +460,8 @@ function scheduleCommit(){ clearTimeout(commitTimer); commitTimer=setTimeout(com
 function commitCenter(){
   clearTimeout(commitTimer);
   if(!centerDirty) return;
-  if(Math.abs(fx-lastFx)<1e-4 && Math.abs(fy-lastFy)<1e-4){ centerDirty=false; return; }
+  if(Math.abs(fx-lastFx)<1e-4 && Math.abs(fy-lastFy)<1e-4 && Math.abs(fz-lastFz)<1e-4){
+    centerDirty=false; return; }
   centerDirty=false; loadRoi(); saveSettings();
 }
 
@@ -467,6 +491,7 @@ function drawVolume(state,cam,r){
   gl.uniform1f(L.wl,params.wl); gl.uniform1f(L.ww,params.ww);
   gl.uniform1f(L.thresh,params.thresh); gl.uniform1f(L.iso,params.iso);
   gl.uniform1f(L.light,params.light); gl.uniform1i(L.cmap,params.cmap);
+  gl.uniform1i(L.rgb,VOL_RGB?1:0);
   gl.uniform1f(L.jitter,params.jitter?1:0);
   gl.uniform3f(L.texel,1/Math.max(1,state.nx),1/Math.max(1,state.ny),1/Math.max(1,state.nz));
   gl.bindTexture(gl.TEXTURE_3D,state.tex); gl.drawArrays(gl.TRIANGLES,0,36);
@@ -478,6 +503,7 @@ function drawSlice(v){
   gl.uniform1i(SL.axis,v.axis);
   gl.uniform1f(SL.slice, v.axis===0?fz : v.axis===1?fy : fx);
   gl.uniform1i(SL.ready, (picker.status==="ready"&&picker.tex)?1:0);
+  gl.uniform1i(SL.rgb, VOL_RGB?1:0);
   gl.uniform1f(SL.wl,params.wl); gl.uniform1f(SL.ww,params.ww);
   if(picker.tex) gl.bindTexture(gl.TEXTURE_3D,picker.tex);
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
@@ -496,15 +522,42 @@ function draw(){
   });
   updateOverlay();
   const ctr=document.getElementById("ctr");
-  ctr.textContent=`center ${(fx*100).toFixed(1)}% , ${(fy*100).toFixed(1)}%`;
+  ctr.textContent=activeBlock
+    ? `blk ${activeBlock} · ${(activeFx*100).toFixed(0)}% , ${(activeFy*100).toFixed(0)}%`
+    : `center ${(fx*100).toFixed(1)}% , ${(fy*100).toFixed(1)}%`;
 }
 
 // ---------- loads ----------
+// The picker is the WHOLE brain: /api/brain assembles every block into one
+// RAS-mm world grid; /api/brain/info gives that grid's world AABB; /api/transforms
+// gives each block's placement so a picked world point can be mapped back to the
+// block that owns it (and its in-block fx,fy) for the high-LOD ROI fetch.
 async function loadPicker(){
   const conn=document.getElementById("conn");
   try{
-    const url=`${API}/api/roi?block=${BLOCK}&level=${BROWSE_LEVEL}&size=${BROWSE_SIZE}&mode=region&cap=256`;
-    const buf=await (await fetch(url)).arrayBuffer();
+    const [info, xf] = await Promise.all([
+      (await fetch(`${API}/api/brain/info?brain=${BRAIN}&cap=${BRAIN_CAP}`)).json(),
+      (await fetch(`${API}/api/transforms?brain=${BRAIN}`)).json(),
+    ]);
+    worldMin = info.worldMin.slice();
+    worldSpan = info.span.slice();
+    blockPlac = {};
+    const tf = (xf && xf.transforms) || {};
+    if(Object.keys(tf).length){
+      for(const [bid, t] of Object.entries(tf)){
+        const Minv = mat4.invert(mat4.create(), t.matrix) || mat4.create();
+        blockPlac[bid] = {Minv, ext:t.extent_mm.slice()};   // extent_mm = [Ex,Ey,Ez]
+      }
+    }else{
+      // brain with no anatomical transforms (e.g. the single-block hb02): place
+      // each block with identity, deriving its [Ex,Ey,Ez] from dataset info.
+      const di=await (await fetch(`${API}/api/dataset/info?brain=${encodeURIComponent(BRAIN)}`)).json();
+      (di.blocks||[]).forEach(bi=>{
+        const e=bi.extent_mm;                               // (z,y,x) mm
+        blockPlac[bi.block_id]={Minv:mat4.create(), ext:[e[2],e[1],e[0]]};
+      });
+    }
+    const buf=await (await fetch(`${API}/api/brain?brain=${BRAIN}&cap=${BRAIN_CAP}`)).arrayBuffer();
     const b=parse(buf); picker.tex=upload(b);
     picker.dx=b.dx; picker.dy=b.dy; picker.dz=b.dz;
     picker.nx=b.dx; picker.ny=b.dy; picker.nz=b.dz;
@@ -513,15 +566,43 @@ async function loadPicker(){
   }catch(e){ picker.status="error"; console.error("picker",e); conn.className="st"; conn.textContent="OFFLINE"; }
 }
 
+// Map a picked normalized center (fx,fy,fz in the world grid) to the block that
+// owns that world point + its in-block (fx,fy). Picks the block whose local
+// coords are most interior (nearest when the point is in a gap between blocks).
+function locateBlock(fx,fy,fz){
+  const ids = Object.keys(blockPlac);
+  if(!ids.length) return null;
+  const wm=[worldMin[0]+fx*worldSpan[0], worldMin[1]+fy*worldSpan[1], worldMin[2]+fz*worldSpan[2]];
+  let best=null;
+  for(const bid of ids){
+    const p=blockPlac[bid];
+    const l=vec3.transformMat4(vec3.create(), wm, p.Minv);   // world -> block-local mm
+    const hx=p.ext[0]/2, hy=p.ext[1]/2, hz=p.ext[2]/2;
+    const nrm=Math.max(Math.abs(l[0])/hx, Math.abs(l[1])/hy, Math.abs(l[2])/hz);
+    const cand={bid, nrm, inside:nrm<=1.0,
+      bfx:Math.min(1,Math.max(0,(l[0]+hx)/p.ext[0])),      // local x -> /api/roi fx
+      bfy:Math.min(1,Math.max(0,(l[1]+hy)/p.ext[1]))};     // local y -> /api/roi fy
+    if(!best || cand.nrm<best.nrm) best=cand;
+  }
+  return best;
+}
+
 async function loadRoi(){
   const myGen=++roiGen;
-  lastFx=fx; lastFy=fy;
+  lastFx=fx; lastFy=fy; lastFz=fz;
   const size=document.getElementById("selSize").value;
   const mode=document.getElementById("selMode").value;
   const conn=document.getElementById("conn");
+  // resolve which block owns the picked world center -> its in-block (fx,fy)
+  const loc=locateBlock(fx,fy,fz);
+  if(!loc){ conn.className="st"; conn.textContent="no blocks"; return; }
+  activeBlock=loc.bid; activeFx=loc.bfx; activeFy=loc.bfy; activeInside=loc.inside;
+  const blk=activeBlock, bfx=activeFx, bfy=activeFy;
+  const blkEl=document.getElementById("blkId");
+  if(blkEl) blkEl.textContent = loc.inside ? blk : blk+" (edge)";
   LEVELS.forEach(lv=>{ if(roi[lv].tex){ gl.deleteTexture(roi[lv].tex); roi[lv].tex=null; } });
   let info;
-  try{ info=await (await fetch(`${API}/api/roi/info?block=${BLOCK}&size=${size}&mode=${mode}`)).json(); }
+  try{ info=await (await fetch(`${API}/api/roi/info?block=${blk}&size=${size}&mode=${mode}`)).json(); }
   catch(e){ conn.className="st"; conn.textContent="OFFLINE"; return; }
   if(myGen!==roiGen) return;
   const byLevel=Object.fromEntries(info.levels.map(l=>[l.level,l]));
@@ -537,8 +618,8 @@ async function loadRoi(){
     if(myGen!==roiGen) return;
     const c=roi[lv]; c.status="loading…";
     try{
-      const url=`${API}/api/roi?block=${BLOCK}&level=${lv}&size=${size}&mode=${mode}`
-               +`&fx=${fx.toFixed(4)}&fy=${fy.toFixed(4)}`;
+      const url=`${API}/api/roi?block=${blk}&level=${lv}&size=${size}&mode=${mode}`
+               +`&fx=${bfx.toFixed(4)}&fy=${bfy.toFixed(4)}`;
       const buf=await (await fetch(url)).arrayBuffer();
       if(myGen!==roiGen) return;
       const b=parse(buf); c.tex=upload(b); c.bmin=b.bmin; c.bmax=b.bmax;
@@ -584,7 +665,7 @@ function applySettings(s){                     // partial-safe: only sets presen
     if(r.jitter!=null) params.jitter=!!r.jitter;
   }
   if(s.center){ fx=numOr(s.center.fx,fx); fy=numOr(s.center.fy,fy); fz=numOr(s.center.fz,fz);
-                lastFx=fx; lastFy=fy; }
+                lastFx=fx; lastFy=fy; lastFz=fz; }
   if(s.roiView){ roiCam.yaw=numOr(s.roiView.yaw,roiCam.yaw); roiCam.pitch=numOr(s.roiView.pitch,roiCam.pitch);
                  roiCam.zoom=numOr(s.roiView.zoom,roiCam.zoom); }
   if(s.pickerView){ pickerCam.yaw=numOr(s.pickerView.yaw,pickerCam.yaw); pickerCam.pitch=numOr(s.pickerView.pitch,pickerCam.pitch);
@@ -675,10 +756,40 @@ syncUI();
 
 buildOverlay();
 requestAnimationFrame(draw);
+
+// reset all GPU textures + picker/roi state, then reload the chosen brain
+async function switchBrain(brainId){
+  BRAIN = brainId;
+  try{ localStorage.setItem(BRAIN_KEY, brainId); }catch(e){}
+  if(picker.tex){ gl.deleteTexture(picker.tex); picker.tex=null; }
+  picker.status="queued";
+  LEVELS.forEach(lv=>{ if(roi[lv].tex){ gl.deleteTexture(roi[lv].tex); roi[lv].tex=null; } roi[lv].status="queued"; });
+  activeBlock=null; blockPlac={};
+  fx=0.5; fy=0.5; fz=0.5;                         // recentre on the new brain
+  document.getElementById("conn").textContent="loading…";
+  await loadPicker();
+  await loadRoi();
+}
+
 (async ()=>{
   await fetchDefault();
   applySettings(backendDefault);                 // backend baseline …
   try{ const s=localStorage.getItem(LS_KEY); if(s) applySettings(JSON.parse(s)); }catch(e){}  // … then browser overrides
+  // populate the brain selector; default to the saved/first brain
+  const sel=$("brainSel");
+  try{
+    const bs=await (await fetch(`${API}/api/brains`)).json();
+    const brains=(bs&&bs.brains)||[];
+    if(brains.length){
+      let start=bs.default;
+      try{ const sv=localStorage.getItem(BRAIN_KEY); if(sv&&brains.some(b=>b.id===sv)) start=sv; }catch(e){}
+      sel.innerHTML="";
+      brains.forEach(b=>{ const o=document.createElement("option");
+        o.value=b.id; o.textContent=b.label||b.id; sel.appendChild(o); });
+      BRAIN = start || brains[0].id; sel.value=BRAIN;
+      sel.addEventListener("change",()=>switchBrain(sel.value));
+    }else{ sel.innerHTML='<option>'+BRAIN+'</option>'; sel.disabled=true; }
+  }catch(e){ sel.innerHTML='<option>'+BRAIN+'</option>'; sel.disabled=true; }
   await loadPicker();
   await loadRoi();
 })();

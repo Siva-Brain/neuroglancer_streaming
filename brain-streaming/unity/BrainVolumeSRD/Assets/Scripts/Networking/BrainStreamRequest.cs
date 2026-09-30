@@ -93,6 +93,14 @@ namespace BrainVolume
 
         static bool IsBaseline(BrainStreamRequest r) => r.Priority >= 1000;
 
+        /// <summary>Abort every in-flight fetch and drop the queue (used when the
+        /// brain is switched so a stale brain's downloads stop writing its cache).</summary>
+        public void CancelAll()
+        {
+            foreach (var kv in _inflight) { kv.Value.Cancel(); Cancelled++; }
+            _inflight.Clear(); _queue.Clear(); _desired.Clear();
+        }
+
         void Pump()
         {
             _queue.Sort((a, b) => a.Priority.CompareTo(b.Priority));

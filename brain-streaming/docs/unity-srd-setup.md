@@ -128,7 +128,23 @@ monitor → brain visible + navigable + progressively refining + bounded cache +
 camera-driven /view (watch DGX logs). **Then** enable Sony and see the same
 brain as a spatial 3D object on the ELF-SR2.
 
+## 6b. Merged block-volume path (default; low-jitter SRD)
+
+`BrainApp.useBlockVolume` (default **on**) switches from ~58 per-slab bricks per block
+to **one merged volume per block** — the fix for SRD eye-move jitter on the RTX 5060.
+The DGX assembles each block once (`GET /api/block_volume`), tissue-cropped, x/y-capped
+at `GPU_MAX_XY` (512), with colour+opacity baked into RGBA and a tiny occupancy volume
+appended (payload = **BVX3**, see `docs/protocol` / `streaming/view.py`). The client draws
+**one raymarched box per block** (`Brain/BlockRaymarch` shader) with occupancy-gated
+empty-space skipping. Level is still camera-distance driven: the throttled `/view` loop
+now only picks each block's level and refetches its whole volume (double-buffered) when the
+level changes. Turn the toggle **off** to fall back to the original per-brick path for A/B.
+Both shaders are auto-created by `BrainApp` (`Shader.Find`), so no manual material wiring.
+
 ## 7. Notes / risks (I could not run the Unity editor here)
+- Merged path uses `TextureFormat.RGBA32` volumes (~2.4 GB for 5 uncropped blocks; tissue
+  crop trims this). If VRAM is tight on the 8 GB 5060, lower `--gpu-max-xy` on the server
+  or reduce `blockSteps` on `BrainVolumeRenderer`.
 - `TextureFormat.RG16` (2×uint8) for `Texture3D` is supported on desktop DX11/RTX;
   if a platform rejects it, switch to `R8`+two textures or `RGBA32` (4× memory).
 - Built-in RP shader. For **URP**, wrap the pass in URP tags and replace

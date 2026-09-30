@@ -13,7 +13,12 @@ services:
     image: brain-streaming
     ports:
       - "${PORT:-8010}:8010"
-    command: ["--no-gpu", "--min-level", "${MIN_LEVEL:-3}"]
+    command: ["--no-gpu", "--min-level", "${MIN_LEVEL:-4}"]
+    # brain 2 (local hb02 fused RGB volume): bind-mount it at the same path the
+    # server looks for by default so it appears in the brain selector. Override the
+    # host path with HB02_DIR; harmless if the directory does not exist.
+    volumes:
+      - "${HB02_DIR:-/home/users/azhar/projectM/viewer_data/fused_8um}:/home/users/azhar/projectM/viewer_data/fused_8um:ro"
     restart: unless-stopped
 
   # A100 / CuPy variant. Needs the NVIDIA Container Toolkit on the host.
@@ -26,7 +31,9 @@ services:
     image: brain-streaming:gpu
     ports:
       - "${PORT:-8010}:8010"
-    command: ["--min-level", "${MIN_LEVEL:-3}"]
+    command: ["--min-level", "${MIN_LEVEL:-4}"]
+    volumes:
+      - "${HB02_DIR:-/home/users/azhar/projectM/viewer_data/fused_8um}:/home/users/azhar/projectM/viewer_data/fused_8um:ro"
     restart: unless-stopped
     deploy:
       resources:

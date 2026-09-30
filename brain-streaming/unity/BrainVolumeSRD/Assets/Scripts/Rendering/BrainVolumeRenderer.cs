@@ -13,13 +13,17 @@ namespace BrainVolume
     public sealed class BrainVolumeRenderer : MonoBehaviour
     {
         public Transform brainRoot;             // brain-local -> world placement
-        public Material raymarchMaterial;       // Brain/Raymarch shader
-        [Range(8, 256)] public int steps = 64;
+        public Material raymarchMaterial;       // Brain/Raymarch shader (per-brick path)
+        public Material blockRaymarchMaterial;  // Brain/BlockRaymarch shader (merged path)
+        public bool useBlockVolume = true;      // draw one volume per block, not N bricks
+        [Range(8, 256)] public int steps = 64;            // per-brick path
+        [Range(32, 384)] public int blockSteps = 192;     // merged path (spans full depth)
         [Range(1f, 30f)] public float density = 8f;
 
         IReadOnlyList<BrainBlock> _blocks;
         Mesh _cube;
         readonly List<Brick> _sorted = new List<Brick>(256);
+        readonly List<BrainBlock> _volSorted = new List<BrainBlock>(8);
 
         /// <summary>Render every block's bricks (all live in shared RAS -> one brain).</summary>
         public void Bind(IReadOnlyList<BrainBlock> blocks) => _blocks = blocks;
@@ -32,12 +36,19 @@ namespace BrainVolume
 
         void OnRenderObject()
         {
-            if (_blocks == null || raymarchMaterial == null || _cube == null) return;
+            if (_blocks == null || _cube == null) return;
             var cam = Camera.current;
             if (cam == null) return;
 
             Matrix4x4 root = brainRoot.localToWorldMatrix;
             Vector3 camPos = cam.transform.position;
+
+            if (useBlockVolume && blockRaymarchMaterial != null)
+            {
+                RenderBlockVolumes(root, camPos);
+                return;
+            }
+            if (raymarchMaterial == null) return;
 
             _sorted.Clear();
             foreach (var blk in _blocks)
@@ -61,6 +72,35 @@ namespace BrainVolume
                 raymarchMaterial.SetTexture("_VolumeTex", b.Texture);
                 raymarchMaterial.SetPass(0);
                 Graphics.DrawMeshNow(_cube, root * b.LocalMatrix);
+            }
+        }
+
+        /// <summary>Merged path: one raymarched box per block (<=5 draws), sorted
+        /// back-to-front. Empty space is skipped inside the shader via occupancy.</summary>
+        void RenderBlockVolumes(Matrix4x4 root, Vector3 camPos)
+        {
+            _volSorted.Clear();
+            foreach (var blk in _blocks)
+                if (blk.Volume != null && blk.Volume.VolumeTex != null) _volSorted.Add(blk);
+            if (_volSorted.Count == 0) return;
+
+            _volSorted.Sort((a, b) =>
+            {
+                float da = (root.MultiplyPoint3x4(a.Volume.CenterLocal) - camPos).sqrMagnitude;
+                float db = (root.MultiplyPoint3x4(b.Volume.CenterLocal) - camPos).sqrMagnitude;
+                return db.CompareTo(da);
+            });
+
+            blockRaymarchMaterial.SetFloat("_Steps", blockSteps);
+            blockRaymarchMaterial.SetFloat("_Density", density);
+            foreach (var blk in _volSorted)
+            {
+                var v = blk.Volume;
+                blockRaymarchMaterial.SetTexture("_VolumeTex", v.VolumeTex);
+                blockRaymarchMaterial.SetTexture("_OccTex", v.OccTex);
+                blockRaymarchMaterial.SetVector("_OccScale", v.OccScale);
+                blockRaymarchMaterial.SetPass(0);
+                Graphics.DrawMeshNow(_cube, root * v.LocalMatrix);
             }
         }
 

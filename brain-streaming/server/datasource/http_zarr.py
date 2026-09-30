@@ -47,6 +47,10 @@ class HttpZarrBrainSource(BrainDataSource):
         self._session.mount("https://", _adapter)
         self._info: Optional[DatasetInfo] = None
         self._level_meta: Dict[int, dict] = {}   # raw array zarr.json per level
+        # OME arrays are usually 4D (z,y,x,c); a segmentation label map is 3D
+        # (z,y,x, no channel axis). We normalise 3D -> 4D with c=1 internally and
+        # drop the trailing channel segment from the chunk key when _ndim==3.
+        self._ndim = 4
 
     # ---- metadata -----------------------------------------------------------
     def get_metadata(self) -> DatasetInfo:
@@ -64,9 +68,14 @@ class HttpZarrBrainSource(BrainDataSource):
             self._level_meta[lvl] = meta
             shape = tuple(meta["shape"])
             cshape = tuple(meta["chunk_grid"]["configuration"]["chunk_shape"])
-            scale = ds["coordinateTransformations"][0]["scale"]  # (z,y,x,c) metres
+            scale = tuple(ds["coordinateTransformations"][0]["scale"])  # (z,y,x[,c]) metres
+            self._ndim = len(shape)
+            if self._ndim == 3:                      # label map: append a channel axis of 1
+                shape = shape + (1,)
+                cshape = cshape + (1,)
+                scale = scale + (1.0,)
             grid = tuple(int(math.ceil(s / c)) for s, c in zip(shape, cshape))
-            levels.append(LevelInfo(lvl, shape, cshape, tuple(scale), grid))
+            levels.append(LevelInfo(lvl, shape, cshape, scale, grid))
 
         levels.sort(key=lambda l: l.level)
         # finest = smallest x/y voxel
@@ -112,7 +121,7 @@ class HttpZarrBrainSource(BrainDataSource):
     def get_chunk(self, level: int, coords: Tuple[int, int, int, int]) -> ChunkData:
         li = self.level_info(level)
         z, y, x, c = coords
-        url = f"{self.root}/{level}/c/{z}/{y}/{x}/{c}"
+        url = self._shard_url(level, z, y, x, c)
 
         t0 = time.time()
         resp = self._session.get(url, timeout=self.timeout)
@@ -185,7 +194,7 @@ class HttpZarrBrainSource(BrainDataSource):
         # and dominated fine-level ROI latency: ~100 shards x ~350 ms round-trip).
         def get_index(sc):
             zi, yi, xi = sc
-            url = f"{self.root}/{level}/c/{zi}/{yi}/{xi}/0"
+            url = self._shard_url(level, zi, yi, xi, 0)
             return sc, url, self._range_tail(url, tail_n)
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -268,11 +277,18 @@ class HttpZarrBrainSource(BrainDataSource):
             arr[z0:z0 + zs, y0:y0 + ys, x0:x0 + xs, c0:c0 + cs] = dec[:zs, :ys, :xs, :cs]
         return arr
 
+    def _shard_url(self, level: int, z: int, y: int, x: int, c: int) -> str:
+        """Chunk key for one shard. 4D arrays carry a trailing channel segment
+        (`.../{x}/{c}`); a 3D label map has none (`.../{x}`)."""
+        base = f"{self.root}/{level}/c/{z}/{y}/{x}"
+        return base if self._ndim == 3 else f"{base}/{c}"
+
     def _inner_shape(self, li: LevelInfo) -> Tuple[int, int, int, int]:
         # read the sharding_indexed inner chunk_shape from the level's codecs
         for codec in self._level_meta[li.level].get("codecs", []):
             if codec.get("name") == "sharding_indexed":
-                return tuple(codec["configuration"]["chunk_shape"])
+                inner = tuple(codec["configuration"]["chunk_shape"])
+                return inner if len(inner) == 4 else inner + (1,)   # 3D label -> c=1
         # no sharding -> the chunk itself is the unit
         return li.chunk_shape
 

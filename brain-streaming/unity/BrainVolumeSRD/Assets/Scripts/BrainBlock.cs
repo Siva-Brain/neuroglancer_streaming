@@ -18,6 +18,12 @@ namespace BrainVolume
         public BrainChunkCache Cache;
         public RequestScheduler Scheduler;
 
+        // Merged-volume path (useBlockVolume): one assembled volume per block
+        // instead of the per-slab brick cache/scheduler above.
+        public BlockVolume Volume;
+        public int VolumeLevel = -1;
+        public bool VolumeFetching;
+
         /// <summary>Block-local mm half-extents in (x,y,z) from extent_mm (z,y,x).</summary>
         public Vector3 HalfExtentMm()
         {
