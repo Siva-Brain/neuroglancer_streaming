@@ -45,7 +45,9 @@ namespace BrainVolume
         readonly SRD.Core.SRDManager _mgr;
         public SonySRDAdapter(SRD.Core.SRDManager mgr) { _mgr = mgr; }
 
-        public bool IsAvailable => _mgr != null && _mgr.IsRunning;   // API name may vary by SDK version
+        // SRDManager has no IsRunning. It deactivates its own GameObject in Awake when
+        // no SRD session/runtime is available, and creates Presence once a session exists.
+        public bool IsAvailable => _mgr != null && _mgr.isActiveAndEnabled && _mgr.Presence != null;
         public string DisplayName => "Sony Spatial Reality Display (ELF-SR2)";
         public bool Initialize() { return _mgr != null; }
         public void UpdateCamera(Camera cam) { /* SRDManager tracks the source camera itself */ }

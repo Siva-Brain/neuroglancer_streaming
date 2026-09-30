@@ -1,0 +1,50 @@
+{
+  "width": 384,
+  "height": 384,
+  "depth": 183,
+  "channels": 1,
+  "format": "R8",
+  "colorMode": "grayscale-normalized",
+  "downsampleScale": 0.75,
+  "originalDimensions": [
+    512,
+    512,
+    244
+  ],
+  "originalIntensityRange": [
+    0.0,
+    20642.0
+  ],
+  "originalVoxelSpacingMM": [
+    0.48829999566078186,
+    0.48829999566078186,
+    0.7000004053115845
+  ],
+  "niftiAffine": [
+    [
+      0.0,
+      0.0,
+      0.7000004053115845,
+      -85.10009765625
+    ],
+    [
+      0.0,
+      -0.48829999566078186,
+      0.0,
+      101.0
+    ],
+    [
+      0.48829999566078186,
+      0.0,
+      0.0,
+      -135.0
+    ],
+    [
+      0.0,
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "sourceFile": "t1_mri.nii.gz"
+}

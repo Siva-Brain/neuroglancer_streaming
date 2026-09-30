@@ -25,6 +25,12 @@ namespace BrainVolume
         {
             Adapter = CreateAdapter();
             Adapter.Initialize();
+        }
+
+        // Checked in Start, not Awake: SRDManager.Awake (which may disable itself when
+        // no display/runtime is present) is not guaranteed to have run before ours.
+        void Start()
+        {
             SonyActive = Adapter.IsAvailable;
             if (mode == BrainDisplayMode.SonyElfSr2 && !SonyActive)
                 Debug.LogWarning("[SonySRD] ELF-SR2 requested but SDK/display unavailable -> normal monitor.");
