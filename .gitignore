@@ -37,3 +37,7 @@ Thumbs.db
 # Large local volume data (T1 raw is 26 MB; not needed for streaming work)
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/T1/*.raw
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/T1/*.raw.meta
+
+# Unity crash-recovery scene copies
+**/Assets/_Recovery/
+**/Assets/_Recovery.meta
