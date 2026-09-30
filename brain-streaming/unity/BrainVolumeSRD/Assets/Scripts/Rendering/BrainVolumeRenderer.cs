@@ -14,14 +14,15 @@ namespace BrainVolume
     {
         public Transform brainRoot;             // brain-local -> world placement
         public Material raymarchMaterial;       // Brain/Raymarch shader
-        [Range(8, 128)] public int steps = 48;
+        [Range(8, 256)] public int steps = 64;
         [Range(1f, 30f)] public float density = 8f;
 
-        BrainChunkCache _cache;
+        IReadOnlyList<BrainBlock> _blocks;
         Mesh _cube;
-        readonly List<Brick> _sorted = new List<Brick>(64);
+        readonly List<Brick> _sorted = new List<Brick>(256);
 
-        public void Bind(BrainChunkCache cache) => _cache = cache;
+        /// <summary>Render every block's bricks (all live in shared RAS -> one brain).</summary>
+        public void Bind(IReadOnlyList<BrainBlock> blocks) => _blocks = blocks;
 
         void Awake()
         {
@@ -31,7 +32,7 @@ namespace BrainVolume
 
         void OnRenderObject()
         {
-            if (_cache == null || raymarchMaterial == null || _cube == null) return;
+            if (_blocks == null || raymarchMaterial == null || _cube == null) return;
             var cam = Camera.current;
             if (cam == null) return;
 
@@ -39,7 +40,11 @@ namespace BrainVolume
             Vector3 camPos = cam.transform.position;
 
             _sorted.Clear();
-            foreach (var b in _cache.Bricks) _sorted.Add(b);
+            foreach (var blk in _blocks)
+            {
+                if (blk.Cache == null) continue;
+                foreach (var b in blk.Cache.Bricks) _sorted.Add(b);
+            }
             // back-to-front: farthest first (premultiplied OVER blending)
             _sorted.Sort((a, b) =>
             {

@@ -48,6 +48,26 @@
   .toggle{margin-left:auto; display:flex; align-items:center; gap:5px; color:#8794ab;}
   #panel::-webkit-scrollbar{width:8px;}
   #panel::-webkit-scrollbar-thumb{background:#233046; border-radius:4px;}
+
+  /* ---- visualization panel (bottom-left) ---- */
+  #viz{position:fixed; left:10px; bottom:34px; width:246px; padding:9px 12px 11px;
+       background:rgba(10,14,22,.9); border:1px solid #223049; border-radius:9px;
+       backdrop-filter:blur(6px);}
+  #viz.collapsed .vbody{display:none;}
+  #viz h1{font-size:11px; margin:0; color:#8fb4ff; letter-spacing:.4px; cursor:pointer;
+          display:flex; justify-content:space-between; align-items:center;}
+  #viz .vbody{margin-top:8px;}
+  #viz .seg{display:flex; gap:4px; margin:4px 0 9px;}
+  #viz .seg button{flex:1; font-size:11px; padding:4px 0;}
+  #viz .seg button.on{background:#2b60c0; border-color:#4f86e0; color:#fff;}
+  #viz .vrow{display:flex; align-items:center; gap:7px; margin:6px 0;}
+  #viz .vrow label{flex:0 0 62px; color:#8794ab;}
+  #viz .vrow input[type=range]{flex:1; min-width:0; accent-color:#5b8bff;}
+  #viz .vrow select{flex:1; min-width:0; font:inherit; color:#cfe0ff; background:#16233a;
+                    border:1px solid #2c405e; border-radius:6px; padding:2px 4px;}
+  #viz .vrow .val{flex:0 0 38px; text-align:right; color:#f5c451; font-size:11px;}
+  #viz .vrow.chk{gap:8px;} #viz .vrow.chk label{flex:1;}
+  #viz .glabel{color:#5f6b82; font-size:10px; letter-spacing:.4px; margin:8px 0 3px; text-transform:uppercase;}
 </style>
 </head>
 <body>
@@ -77,10 +97,37 @@
     <button id="btnCopy">Copy JSON</button>
     <button id="btnFit">Fit view</button>
   </div>
+  <div id="moderow" class="tools" style="display:none;flex-wrap:wrap;align-items:center;gap:8px"></div>
   <div id="blocks"></div>
 </div>
 
 <div id="hint">drag = orbit · scroll = zoom &nbsp;|&nbsp; edit each block's transform · toggle visibility · positions auto-save</div>
+
+<div id="viz">
+  <h1 id="vizTitle">visualization <span class="caret" style="color:#5f6b82">▾</span></h1>
+  <div class="vbody">
+    <div class="glabel">color</div>
+    <div class="seg" id="vColorMode">
+      <button data-cm="0">grayscale</button>
+      <button data-cm="1">per-block</button>
+      <button data-cm="2">colormap</button>
+    </div>
+    <div class="vrow" id="vCmapRow"><label>colormap</label>
+      <select id="vCmap"><option value="0">bone</option><option value="1">gray</option>
+        <option value="2">hot</option><option value="3">viridis</option></select></div>
+
+    <div class="glabel">contrast</div>
+    <div class="vrow"><label>level</label><input id="vWL" type="range" min="0" max="1" step="0.01"><span class="val" id="lWL"></span></div>
+    <div class="vrow"><label>width</label><input id="vWW" type="range" min="0.02" max="1" step="0.01"><span class="val" id="lWW"></span></div>
+    <div class="vrow"><label>threshold</label><input id="vThresh" type="range" min="0" max="0.4" step="0.005"><span class="val" id="lThresh"></span></div>
+
+    <div class="glabel">depth &amp; quality</div>
+    <div class="vrow"><label>density</label><input id="vDensity" type="range" min="0.1" max="4" step="0.1"><span class="val" id="lDensity"></span></div>
+    <div class="vrow"><label>lighting</label><input id="vLight" type="range" min="0" max="1" step="0.02"><span class="val" id="lLight"></span></div>
+    <div class="vrow"><label>quality</label><input id="vQual" type="range" min="32" max="256" step="16"><span class="val" id="lQual"></span></div>
+    <div class="vrow chk"><input id="vJitter" type="checkbox"><label for="vJitter">smooth (ray jitter)</label></div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
 <script>
@@ -115,31 +162,53 @@ precision highp float; precision highp sampler3D;
 in vec3 vLocal; out vec4 frag;
 uniform vec3 uCamLocal, uTint; uniform sampler3D uVol;
 uniform float uAlpha; uniform int uSteps;
+uniform int uColorMode;    // 0=grayscale 1=per-block tint 2=colormap
+uniform int uCmap;         // 0 bone 1 gray 2 hot 3 viridis (colormap mode)
+uniform float uWL, uWW;    // transfer-function window level / width (contrast)
+uniform float uThresh;     // density floor (cuts haze)
+uniform float uLight;      // gradient-shading strength 0..1
+uniform float uJitter;     // 0/1 dithered ray start
+uniform vec3 uTexel;       // 1/dims of THIS brick, for gradient central differences
 vec2 hitBox01(vec3 o, vec3 d){
   vec3 inv=1.0/d; vec3 t0=(vec3(0.0)-o)*inv, t1=(vec3(1.0)-o)*inv;
   vec3 tn=min(t0,t1), tf=max(t0,t1);
   return vec2(max(max(tn.x,tn.y),tn.z), min(min(tf.x,tf.y),tf.z));
 }
+float raw(vec3 p){ vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }   // density*tissue
+float tf(float v){ return clamp((v-(uWL-uWW*0.5))/max(uWW,1e-4),0.0,1.0); }
+vec3 grad(vec3 p){ return vec3(
+  raw(p+vec3(uTexel.x,0,0))-raw(p-vec3(uTexel.x,0,0)),
+  raw(p+vec3(0,uTexel.y,0))-raw(p-vec3(0,uTexel.y,0)),
+  raw(p+vec3(0,0,uTexel.z))-raw(p-vec3(0,0,uTexel.z))); }
+vec3 cmap(float t){
+  if(uCmap==1) return vec3(t);
+  if(uCmap==2) return clamp(vec3(t*3.0,t*3.0-1.0,t*3.0-2.0),0.0,1.0);            // hot
+  if(uCmap==3) return clamp(vec3(0.28+0.9*t-0.3*t*t,0.02+1.4*t-0.6*t*t,
+                                 0.4+0.6*t-1.2*t*t+0.6*t*t*t),0.0,1.0);          // viridis
+  return mix(vec3(0.52,0.60,0.80),vec3(0.99),t); }                              // bone
 void main(){
   vec3 d=normalize(vLocal-uCamLocal);
   vec2 t=hitBox01(uCamLocal,d); t.x=max(t.x,0.0);
   if(t.y<=t.x){ discard; }
   float span=t.y-t.x; int N=uSteps; float dt=span/float(N);
+  float j = uJitter>0.5 ? fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5) : 0.5;
   vec3 outC=vec3(0.0); float outA=0.0;
-  for(int i=0;i<256;i++){
+  for(int i=0;i<512;i++){
     if(i>=N) break;
-    vec3 p=uCamLocal+d*(t.x+(float(i)+0.5)*dt);
-    vec2 s=texture(uVol,p).rg;                  // r=gray, g=mask
-    float tissue=1.0-s.r;                        // dark tissue on light bg
-    float dens=s.g*tissue;
-    if(dens>0.02){
-      float a=clamp(dens*uAlpha*dt*40.0,0.0,1.0);
-      vec3 col=mix(vec3(0.55,0.62,0.78), vec3(0.98), tissue); // cool→white
-      col*=uTint;                                // per-block hue
-      outC += (1.0-outA)*a*col;
-      outA += (1.0-outA)*a;
-      if(outA>0.985) break;
-    }
+    vec3 p=uCamLocal+d*(t.x+(float(i)+j)*dt);
+    float v0=raw(p); if(v0<uThresh) continue;
+    float v=tf(v0); if(v<=0.0) continue;
+    float a=clamp(v*uAlpha*dt*40.0,0.0,1.0);
+    vec3 col;
+    if(uColorMode==1)      col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
+    else if(uColorMode==2) col=cmap(v);                                        // colormap
+    else                   col=vec3(0.06+0.94*v);                              // grayscale
+    if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);
+      vec3 n=gm>1e-4?-g/gm:vec3(0.0); float diff=max(dot(n,-d),0.0);
+      col*=mix(1.0,0.25+0.85*diff,uLight*clamp(gm*8.0,0.0,1.0)); }
+    outC += (1.0-outA)*a*col;
+    outA += (1.0-outA)*a;
+    if(outA>0.985) break;
   }
   frag=vec4(outC,outA);                          // premultiplied
 }`;
@@ -152,7 +221,24 @@ gl.linkProgram(prog);
 if(!gl.getProgramParameter(prog,gl.LINK_STATUS)) console.error(gl.getProgramInfoLog(prog));
 const U = n => gl.getUniformLocation(prog,n);
 const loc = {vp:U("uViewProj"),model:U("uModel"),camL:U("uCamLocal"),tint:U("uTint"),
-             vol:U("uVol"),alpha:U("uAlpha"),steps:U("uSteps")};
+             vol:U("uVol"),alpha:U("uAlpha"),steps:U("uSteps"),
+             colorMode:U("uColorMode"),cmap:U("uCmap"),wl:U("uWL"),ww:U("uWW"),
+             thresh:U("uThresh"),light:U("uLight"),jitter:U("uJitter"),texel:U("uTexel")};
+
+// ---------- global visualization params (control panel) ----------
+const VIZ_KEY="brain-viz-v1";
+const viz = {
+  colorMode:0,   // 0 grayscale (default, matches the reference brain), 1 per-block tint, 2 colormap
+  cmap:0,        // bone/gray/hot/viridis (colormap mode)
+  wl:0.35, ww:0.55,   // contrast window level/width
+  thresh:0.02,   // density floor
+  density:1.0,   // -> uAlpha
+  quality:80,    // -> uSteps
+  light:0.0,     // gradient shading (off by default: brick borders can seam)
+  jitter:true,
+};
+try{ const s=JSON.parse(localStorage.getItem(VIZ_KEY)||"null"); if(s) Object.assign(viz,s); }catch(e){}
+function saveViz(){ try{ localStorage.setItem(VIZ_KEY,JSON.stringify(viz)); }catch(e){} }
 
 // unit cube [0,1]^3 (triangles)
 const cube = new Float32Array([
@@ -170,6 +256,9 @@ const S = {
   inflight:new Set(),                   // "id|zi@level" global
   requested:0, received:0, bytes:0,
   bytesWin:0, winT:performance.now(), mbps:0,
+  useNg:false,                          // anatomical (Neuroglancer) placement on/off
+  pivot:"center",                       // "origin" | "center" (grid-center = coherent row)
+  haveNg:false,                         // any block has a server matrix
 };
 // Block = { id, info, extentMm:[z,y,x], levelVox:{}, nBricks, tint:[r,g,b],
 //           visible:bool, transform:{t,r,s},
@@ -180,26 +269,40 @@ function fmt(n){return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048
 
 // ---------- transforms ----------
 const D2R = Math.PI/180;
+// Anatomical mode uses a server-supplied per-block base matrix (Neuroglancer
+// registration -> common brain mm); the per-block T/R/S then acts as a manual
+// NUDGE on top of it. Manual mode ignores the base and uses T/R/S directly.
+// activeXform picks which editable transform the sliders drive per mode.
+function activeXform(blk){ return (S.useNg && blk.ng) ? blk.nudge : blk.transform; }
 function recompute(blk){
-  const {t,r,s}=blk.transform;
+  const {t,r,s}=activeXform(blk);
   const m=mat4.create();
   mat4.translate(m,m,t);
   mat4.rotateZ(m,m,r[2]*D2R); mat4.rotateY(m,m,r[1]*D2R); mat4.rotateX(m,m,r[0]*D2R);
   mat4.scale(m,m,s);
+  const base=(S.useNg && blk.ng) ? blk.ng[S.pivot] : null;   // "origin" | "center"
+  if(base) mat4.multiply(m,m,base);                          // world = nudge · (base · p_local)
   blk.matrix=m; blk.matrixInv=mat4.invert(mat4.create(),m)||mat4.create();
 }
+function recomputeAll(){ for(const b of S.blocks.values()) recompute(b); }
 function saveTransforms(){
-  const o={};
+  const o={__global:{useNg:S.useNg, pivot:S.pivot}};
   for(const b of S.blocks.values())
-    o[b.id]={t:b.transform.t, r:b.transform.r, s:b.transform.s, visible:b.visible};
+    o[b.id]={t:b.transform.t, r:b.transform.r, s:b.transform.s, visible:b.visible,
+             nudge:{t:b.nudge.t, r:b.nudge.r, s:b.nudge.s}};
   try{ localStorage.setItem(LS_KEY, JSON.stringify(o)); }catch(e){}
 }
 function loadSaved(){
   try{ return JSON.parse(localStorage.getItem(LS_KEY)||"null")||{}; }catch(e){ return {}; }
 }
+function idNudge(){ return {t:[0,0,0], r:[0,0,0], s:[1,1,1]}; }
 
 // ---------- networking ----------
 async function getInfo(){ return (await fetch(`${API}/api/dataset/info`)).json(); }
+async function getTransforms(){
+  try{ return (await fetch(`${API}/api/transforms`)).json(); }
+  catch(e){ return {transforms:{}}; }
+}
 async function postView(blk,cam){
   const r=await fetch(`${API}/api/view`,{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify({...cam, block:blk.id})}); return r.json();
@@ -266,7 +369,7 @@ async function fetchBrick(blk,zi,level,k,gk){
     else{
       const bmin=b.bmin, bmax=b.bmax;                  // block-local mm (BVX2)
       if(cur && cur.tex) gl.deleteTexture(cur.tex);
-      blk.bricks.set(zi,{level:b.level,tex:upload3D(b),bmin,bmax,
+      blk.bricks.set(zi,{level:b.level,tex:upload3D(b),bmin,bmax,dx:b.dx,dy:b.dy,dz:b.dz,
                          center:[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2]});
     }
   }catch(e){ console.warn("brick",blk.id,k,e.message); }
@@ -357,7 +460,10 @@ function draw(now){
 
   gl.useProgram(prog); gl.bindVertexArray(vao);
   gl.uniformMatrix4fv(loc.vp,false,vp);
-  gl.uniform1f(loc.alpha,1.0); gl.uniform1i(loc.steps,48); gl.uniform1i(loc.vol,0);
+  gl.uniform1f(loc.alpha,viz.density); gl.uniform1i(loc.steps,viz.quality); gl.uniform1i(loc.vol,0);
+  gl.uniform1i(loc.colorMode,viz.colorMode); gl.uniform1i(loc.cmap,viz.cmap);
+  gl.uniform1f(loc.wl,viz.wl); gl.uniform1f(loc.ww,viz.ww); gl.uniform1f(loc.thresh,viz.thresh);
+  gl.uniform1f(loc.light,viz.light); gl.uniform1f(loc.jitter,viz.jitter?1:0);
   gl.activeTexture(gl.TEXTURE0);
 
   // collect every visible brick with its world model, sort back-to-front
@@ -381,6 +487,7 @@ function draw(now){
     gl.uniformMatrix4fv(loc.model,false,model);
     gl.uniform3fv(loc.camL,cl);
     gl.uniform3fv(loc.tint,blk.tint);
+    gl.uniform3f(loc.texel,1/Math.max(1,b.dx),1/Math.max(1,b.dy),1/Math.max(1,b.dz));
     gl.bindTexture(gl.TEXTURE_3D,b.tex);
     gl.drawArrays(gl.TRIANGLES,0,36);
   }
@@ -420,9 +527,21 @@ function axisRow(parent,names,vals,steps,on){
   });
   parent.appendChild(g);
 }
+function buildModeRow(){
+  const host=$("moderow"); host.innerHTML="";
+  if(!S.haveNg){ host.style.display="none"; return; }
+  host.style.display="flex";
+  const lab=document.createElement("label"); lab.className="toggle";
+  const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=S.useNg;
+  cb.addEventListener("change",()=>{ S.useNg=cb.checked; recomputeAll();
+    buildModeRow(); buildPanel(); saveTransforms(); fitView(); requestViewSoon(); });
+  lab.append(cb, document.createTextNode(" anatomical (Neuroglancer) — reassemble brain"));
+  host.appendChild(lab);
+}
 function buildPanel(){
   const host=$("blocks"); host.innerHTML="";
   $("pcount").textContent=`(${S.blocks.size})`;
+  const anat = S.useNg;
   for(const blk of S.blocks.values()){
     const card=document.createElement("div"); card.className="blk"+(blk.visible?"":" hidden");
     // header: swatch + name + extent + visibility
@@ -439,16 +558,25 @@ function buildPanel(){
     tog.appendChild(cb); tog.appendChild(document.createTextNode("show"));
     head.append(sw,nm,ex,tog); card.appendChild(head);
 
+    const usingNg = anat && blk.ng;                 // this block driven by a matrix?
+    const xf = usingNg ? blk.nudge : blk.transform; // sliders edit whichever is active
+    if(anat){
+      const src=document.createElement("div"); src.className="grp";
+      src.style.color = usingNg ? "#7fd18f" : "#e0a15a";
+      src.textContent = usingNg ? "anatomical matrix + nudge" : "no matrix — manual";
+      card.appendChild(src);
+    }
     const onChange=()=>{ recompute(blk); saveTransforms(); requestViewSoon(); };
-    let g=document.createElement("div"); g.className="grp"; g.textContent="Translation (mm)";
+    let g=document.createElement("div"); g.className="grp";
+    g.textContent=(usingNg?"Nudge — ":"")+"Translation (mm)";
     card.appendChild(g);
-    axisRow(card,["X","Y","Z"],blk.transform.t,1,(i,v)=>{blk.transform.t[i]=v; onChange();});
+    axisRow(card,["X","Y","Z"],xf.t,1,(i,v)=>{xf.t[i]=v; onChange();});
     g=document.createElement("div"); g.className="grp"; g.textContent="Rotation (deg)";
     card.appendChild(g);
-    axisRow(card,["X","Y","Z"],blk.transform.r,1,(i,v)=>{blk.transform.r[i]=v; onChange();});
+    axisRow(card,["X","Y","Z"],xf.r,1,(i,v)=>{xf.r[i]=v; onChange();});
     g=document.createElement("div"); g.className="grp"; g.textContent="Scale";
     card.appendChild(g);
-    axisRow(card,["X","Y","Z"],blk.transform.s,0.01,(i,v)=>{blk.transform.s[i]=v; onChange();});
+    axisRow(card,["X","Y","Z"],xf.s,0.01,(i,v)=>{xf.s[i]=v; onChange();});
 
     const row2=document.createElement("div"); row2.className="row2";
     const rb=document.createElement("button"); rb.textContent="Reset";
@@ -462,10 +590,14 @@ function buildPanel(){
   }
 }
 function resetBlock(blk){
-  const d=blk.info.default_transform||{};
-  blk.transform={ t:(d.translation||[0,0,0]).slice(),
-                  r:(d.rotation_deg||[0,0,0]).slice(),
-                  s:(d.scale||[1,1,1]).slice() };
+  if(S.useNg && blk.ng){                       // anatomical: reset the nudge only
+    blk.nudge=idNudge();
+  }else{
+    const d=blk.info.default_transform||{};
+    blk.transform={ t:(d.translation||[0,0,0]).slice(),
+                    r:(d.rotation_deg||[0,0,0]).slice(),
+                    s:(d.scale||[1,1,1]).slice() };
+  }
   blk.visible=true; recompute(blk); saveTransforms(); buildPanel(); requestViewSoon();
 }
 let viewSoon=0;
@@ -474,23 +606,57 @@ function requestViewSoon(){ lastKey=""; }   // force next maybeView to re-select
 $("btnReset").addEventListener("click",()=>{ for(const b of S.blocks.values()) resetBlock(b); fitView(); });
 $("btnFit").addEventListener("click",fitView);
 $("btnCopy").addEventListener("click",async()=>{
-  const o={};
-  for(const b of S.blocks.values()) o[b.id]={translation:b.transform.t,rotation_deg:b.transform.r,scale:b.transform.s,visible:b.visible};
+  const o={__mode:{anatomical:S.useNg, pivot:S.pivot}};
+  for(const b of S.blocks.values()) o[b.id]={translation:b.transform.t,rotation_deg:b.transform.r,scale:b.transform.s,
+    nudge:b.nudge, hasMatrix:!!b.ng, visible:b.visible};
   const txt=JSON.stringify(o,null,2);
   try{ await navigator.clipboard.writeText(txt); $("btnCopy").textContent="Copied!"; setTimeout(()=>$("btnCopy").textContent="Copy JSON",1200); }
   catch(e){ console.log(txt); alert("Transforms (also logged to console):\n\n"+txt); }
 });
 
+// ---------- visualization panel wiring ----------
+function syncViz(){
+  const set=(id,v)=>{const e=$(id); if(e)e.value=v;};
+  set("vWL",viz.wl); $("lWL").textContent=viz.wl.toFixed(2);
+  set("vWW",viz.ww); $("lWW").textContent=viz.ww.toFixed(2);
+  set("vThresh",viz.thresh); $("lThresh").textContent=viz.thresh.toFixed(3);
+  set("vDensity",viz.density); $("lDensity").textContent=viz.density.toFixed(1);
+  set("vLight",viz.light); $("lLight").textContent=viz.light.toFixed(2);
+  set("vQual",viz.quality); $("lQual").textContent=viz.quality;
+  set("vCmap",viz.cmap); $("vJitter").checked=viz.jitter;
+  [...document.querySelectorAll("#vColorMode button")].forEach(b=>b.classList.toggle("on",+b.dataset.cm===viz.colorMode));
+  $("vCmapRow").style.display = viz.colorMode===2 ? "flex" : "none";
+}
+function bindViz(id,key,parse=parseFloat){ const e=$(id); if(!e)return;
+  e.addEventListener("input",()=>{ viz[key]=parse(e.value); syncViz(); saveViz(); }); }
+bindViz("vWL","wl"); bindViz("vWW","ww"); bindViz("vThresh","thresh");
+bindViz("vDensity","density"); bindViz("vLight","light");
+bindViz("vQual","quality",v=>parseInt(v,10));
+$("vCmap").addEventListener("change",()=>{ viz.cmap=+$("vCmap").value; saveViz(); });
+$("vJitter").addEventListener("change",()=>{ viz.jitter=$("vJitter").checked; saveViz(); });
+[...document.querySelectorAll("#vColorMode button")].forEach(b=>
+  b.addEventListener("click",()=>{ viz.colorMode=+b.dataset.cm; syncViz(); saveViz(); }));
+$("vizTitle").addEventListener("click",()=>{ const p=$("viz"),c=p.classList.toggle("collapsed");
+  $("vizTitle").querySelector(".caret").textContent=c?"▸":"▾"; });
+syncViz();
+
 // ---------- boot ----------
 (async function(){
   $("server").textContent=location.host;
   try{
-    const info=await getInfo();
+    const [info, xf] = await Promise.all([getInfo(), getTransforms()]);
     const blockInfos = info.blocks || [ {block_id:"0", ...info} ];  // single-block fallback
     const saved=loadSaved();
+    const ngAll = (xf && xf.transforms) || {};
+    S.haveNg = Object.keys(ngAll).length>0;
+    // restore global mode: saved wins, else default to anatomical when we have matrices
+    const gl_=saved.__global||{};
+    S.pivot = gl_.pivot || "center";
+    S.useNg = S.haveNg && (gl_.useNg!==undefined ? !!gl_.useNg : true);
     blockInfos.forEach((bi,idx)=>{
       const d=bi.default_transform||{};
       const sv=saved[bi.block_id];
+      const ng=ngAll[bi.block_id];
       const blk={
         id:bi.block_id, info:bi,
         extentMm:bi.extent_mm,                          // (z,y,x) mm
@@ -501,6 +667,8 @@ $("btnCopy").addEventListener("click",async()=>{
                       : {t:(d.translation||[0,0,0]).slice(),
                          r:(d.rotation_deg||[0,0,0]).slice(),
                          s:(d.scale||[1,1,1]).slice()},
+        nudge: (sv&&sv.nudge) ? {t:sv.nudge.t.slice(),r:sv.nudge.r.slice(),s:sv.nudge.s.slice()} : idNudge(),
+        ng: ng ? {origin:ng.matrix||ng.matrix_origin, center:ng.matrix||ng.matrix_center, meta:ng} : null,
         bricks:new Map(), have:new Set(), queue:[], matrix:mat4.create(), matrixInv:mat4.create(),
       };
       bi.levels.forEach(l=>{ blk.levelVox[l.level]=l.xy_voxel_um/1000; });
@@ -510,7 +678,7 @@ $("btnCopy").addEventListener("click",async()=>{
       S.blocks.set(blk.id,blk); S.order.push(blk.id);
     });
     $("conn").innerHTML='<span class="dot ok"></span>CONNECTED';
-    buildPanel(); fitView();
+    buildModeRow(); buildPanel(); fitView();
     // coarse whole-brain-per-block first: every z-slab at each block's coarsest level
     let i=0;
     for(const blk of S.blocks.values()){

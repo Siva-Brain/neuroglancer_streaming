@@ -12,11 +12,30 @@ namespace BrainVolume
         public int level; public int[] shape; public int[] grid;
         public int[] chunk_shape; public float xy_voxel_um;
     }
-    [Serializable] public class DatasetInfo {
-        public string name; public string dtype; public string[] axes;
+    [Serializable] public class DefaultTransformDto {
+        public float[] translation; public float[] rotation_deg; public float[] scale;
+    }
+    // One block of the multi-block dataset (each is a physical brain slab).
+    [Serializable] public class BlockInfo {
+        public string block_id; public string name; public string dtype;
         public int channels; public int finest_level; public int coarsest_level;
         public int min_streamable_level; public float[] extent_mm;   // (z,y,x)
         public LevelDto[] levels; public string[] baseline_chunks;
+        public DefaultTransformDto default_transform;
+    }
+    // /api/dataset/info -> { blocks:[...], <first-block mirror> }. We read `blocks`.
+    [Serializable] public class DatasetInfo {
+        public BlockInfo[] blocks;
+        public string name; public float[] extent_mm;   // legacy top-level mirror (unused)
+    }
+    // /api/transforms -> { space, transforms:{id:{...}}, list:[{block,matrix,...}] }.
+    // JsonUtility can't parse the id-keyed dict, so we read the `list` array.
+    [Serializable] public class BlockTransformDto {
+        public string block; public float[] matrix;   // col-major 4x4, local mm -> RAS mm
+        public float centerX; public float[] extent_mm;
+    }
+    [Serializable] public class TransformsResponse {
+        public string space; public BlockTransformDto[] list;
     }
     [Serializable] public class SelectedChunkDto {
         public string chunk_id; public int level; public int[] coords;
@@ -26,13 +45,15 @@ namespace BrainVolume
     [Serializable] class ViewRequestDto {
         public float[] position; public float[] rotation; public float[] forward;
         public float fov; public int viewportWidth; public int viewportHeight;
+        public string block;                 // which block this camera query is for
     }
     [Serializable] class ChunkIdsDto { public string[] chunk_ids; }
 
     /// <summary>
     /// Networking ONLY. Talks to the unchanged DGX streaming API and returns
-    /// plain data (DatasetInfo / ViewResponse / BrainChunk). Knows nothing about
-    /// rendering, caching, or Sony. HTTP today; same shapes map to WebSocket later.
+    /// plain data. Knows nothing about rendering, caching, or Sony. Every per-block
+    /// call carries the block id (?block= / "block" field) so one client serves all
+    /// blocks. HTTP today; same shapes map to WebSocket later.
     /// </summary>
     public sealed class BrainStreamClient
     {
@@ -50,6 +71,12 @@ namespace BrainVolume
             return txt != null ? JsonUtility.FromJson<DatasetInfo>(txt) : null;
         }
 
+        public async Task<TransformsResponse> GetTransformsAsync()
+        {
+            var txt = await GetTextAsync($"{BaseUrl}/api/transforms");
+            return txt != null ? JsonUtility.FromJson<TransformsResponse>(txt) : null;
+        }
+
         public async Task<bool> HealthAsync()
         {
             var txt = await GetTextAsync($"{BaseUrl}/api/health");
@@ -57,30 +84,24 @@ namespace BrainVolume
             return Connected;
         }
 
-        public async Task<ViewResponse> PostViewAsync(CameraState cam)
+        public async Task<ViewResponse> PostViewAsync(CameraState cam, string block)
         {
             var dto = new ViewRequestDto {
                 position = new[] { cam.PositionMm.x, cam.PositionMm.y, cam.PositionMm.z },
                 rotation = new[] { cam.Rotation.x, cam.Rotation.y, cam.Rotation.z, cam.Rotation.w },
                 forward  = new[] { cam.ForwardMm.x, cam.ForwardMm.y, cam.ForwardMm.z },
                 fov = cam.Fov, viewportWidth = cam.ViewportW, viewportHeight = cam.ViewportH,
+                block = block,
             };
             var body = JsonUtility.ToJson(dto);
             var txt = await PostTextAsync($"{BaseUrl}/api/view", body);
             return txt != null ? JsonUtility.FromJson<ViewResponse>(txt) : null;
         }
 
-        /// <summary>Warm the DGX cache for these chunks (server prefetches in parallel).</summary>
-        public async Task PrefetchAsync(IEnumerable<string> chunkIds)
+        /// <summary>REQUEST_CHUNK for one block -> decoded BrainChunk. Cancellable.</summary>
+        public async Task<BrainChunk> GetChunkAsync(string chunkId, string block, CancellationToken ct)
         {
-            var dto = new ChunkIdsDto { chunk_ids = new List<string>(chunkIds).ToArray() };
-            await PostTextAsync($"{BaseUrl}/api/prefetch", JsonUtility.ToJson(dto));
-        }
-
-        /// <summary>REQUEST_CHUNK -> decoded BrainChunk. Cancellable (CANCEL_CHUNK).</summary>
-        public async Task<BrainChunk> GetChunkAsync(string chunkId, CancellationToken ct)
-        {
-            var url = $"{BaseUrl}/api/chunk/{chunkId}?channels={Channels}";
+            var url = $"{BaseUrl}/api/chunk/{chunkId}?channels={Channels}&block={block}";
             float t0 = Time.realtimeSinceStartup;
             using var req = UnityWebRequest.Get(url);
             var op = req.SendWebRequest();

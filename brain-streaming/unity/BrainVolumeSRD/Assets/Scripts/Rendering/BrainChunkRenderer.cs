@@ -20,7 +20,7 @@ namespace BrainVolume
         public Vector3 CenterLocal;     // for back-to-front sorting (brain-local)
         public int VoxelBytes;
 
-        public static Brick Create(BrainChunk c, BrainCoordinateSystem coords)
+        public static Brick Create(BrainChunk c, BrainCoordinateSystem coords, Matrix4x4 worldMatrix)
         {
             var tex = new Texture3D(c.Dx, c.Dy, c.Dz, TextureFormat.RG16, false)
             {
@@ -33,7 +33,8 @@ namespace BrainVolume
             tex.SetPixelData(c.Voxels, 0);
             tex.Apply(false, true);      // no mips; makeNoLongerReadable -> free CPU copy
 
-            var m = coords.BrickLocalMatrix(c.BBoxMinMm, c.BBoxMaxMm);
+            // unit cube -> block-local mm -> (block omeToRas) RAS mm -> Unity units
+            var m = coords.MmToUnityMatrix() * worldMatrix * coords.BrickMmMatrix(c.BBoxMinMm, c.BBoxMaxMm);
             Vector3 center = m.MultiplyPoint3x4(new Vector3(0.5f, 0.5f, 0.5f));
             return new Brick
             {

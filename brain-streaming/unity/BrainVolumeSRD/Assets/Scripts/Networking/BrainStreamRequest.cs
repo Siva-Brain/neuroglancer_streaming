@@ -19,6 +19,7 @@ namespace BrainVolume
     {
         readonly BrainStreamClient _client;
         readonly BrainChunkCache _cache;
+        readonly string _block;
         readonly int _maxConcurrency;
 
         readonly List<BrainStreamRequest> _queue = new List<BrainStreamRequest>();
@@ -33,9 +34,9 @@ namespace BrainVolume
         public int Pending => _queue.Count;
         public int TargetLevel { get; private set; } = -1;
 
-        public RequestScheduler(BrainStreamClient client, BrainChunkCache cache, int maxConcurrency = 6)
+        public RequestScheduler(BrainStreamClient client, BrainChunkCache cache, string block, int maxConcurrency = 4)
         {
-            _client = client; _cache = cache; _maxConcurrency = maxConcurrency;
+            _client = client; _cache = cache; _block = block; _maxConcurrency = maxConcurrency;
         }
 
         public void EnqueueBaseline(string[] baselineChunkIds)
@@ -109,7 +110,7 @@ namespace BrainVolume
             _inflight[r.ChunkId] = cts; Requested++;
             try
             {
-                var chunk = await _client.GetChunkAsync(r.ChunkId, cts.Token);
+                var chunk = await _client.GetChunkAsync(r.ChunkId, _block, cts.Token);
                 if (chunk != null) { _cache.Insert(chunk); Received++; BytesReceived += chunk.SizeBytes; }
             }
             catch { /* aborted / network */ }

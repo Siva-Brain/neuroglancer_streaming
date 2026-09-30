@@ -15,7 +15,6 @@ namespace BrainVolume
             if (app == null) return;
             _style ??= new GUIStyle(GUI.skin.label) { fontSize = 13, richText = true, wordWrap = false };
 
-            var sch = app.Scheduler; var cache = app.Cache;
             app.CurrentLodRange(out int lodMin, out int lodMax);
             string conn = app.ConnectionOk
                 ? "<color=#39d98a>CONNECTED</color>" : "<color=#ff5c5c>DISCONNECTED</color>";
@@ -29,12 +28,13 @@ namespace BrainVolume
             _sb.AppendLine($"GPU            : {SystemInfo.graphicsDeviceName}");
             _sb.AppendLine($"FPS            : {Mathf.RoundToInt(app.Fps)}");
             _sb.AppendLine($"Frame time     : {app.FrameMs:F1} ms");
-            _sb.AppendLine($"Chunks req     : {(sch != null ? sch.Requested : 0)}");
-            _sb.AppendLine($"Chunks recv    : {(sch != null ? sch.Received : 0)}");
-            _sb.AppendLine($"Chunks loaded  : {(cache != null ? cache.Count : 0)} / 58");
-            _sb.AppendLine($"Cache size     : {FmtBytes(cache != null ? cache.BytesUsed : 0)} (evict {(cache != null ? cache.Evictions : 0)})");
-            _sb.AppendLine($"In-flight/pend : {(sch != null ? sch.InFlight : 0)} / {(sch != null ? sch.Pending : 0)}");
-            _sb.AppendLine($"Target LOD     : {(sch != null && sch.TargetLevel >= 0 ? "L" + sch.TargetLevel : "-")}");
+            _sb.AppendLine($"Blocks         : {app.BlockCount}");
+            _sb.AppendLine($"Chunks req     : {app.ChunksRequested}");
+            _sb.AppendLine($"Chunks recv    : {app.ChunksReceived}");
+            _sb.AppendLine($"Bricks loaded  : {app.BricksLoaded}");
+            _sb.AppendLine($"Cache size     : {FmtBytes(app.CacheBytes)} (evict {app.Evictions})");
+            _sb.AppendLine($"In-flight/pend : {app.InFlight} / {app.Pending}");
+            _sb.AppendLine($"Target LOD     : {(app.TargetLevel >= 0 ? "L" + app.TargetLevel : "-")}");
             _sb.AppendLine($"Loaded LOD     : {(lodMin >= 0 ? $"L{lodMin}–L{lodMax}" : "-")}");
             _sb.AppendLine($"Bandwidth      : {app.MbPerSec:F2} MB/s");
             _sb.AppendLine($"Stream latency : {app.LatencyMs:F0} ms");

@@ -17,6 +17,7 @@ namespace BrainVolume
         readonly Dictionary<int, Brick> _bricks = new Dictionary<int, Brick>();   // zSlab -> best brick
         readonly LinkedList<int> _lru = new LinkedList<int>();                    // MRU at front
         readonly BrainCoordinateSystem _coords;
+        readonly Matrix4x4 _worldMatrix;   // this block's local-mm -> RAS-mm placement
         readonly long _maxBytes;
         readonly int _maxBricks;
 
@@ -25,10 +26,10 @@ namespace BrainVolume
         public int Evictions { get; private set; }
         public IEnumerable<Brick> Bricks => _bricks.Values;
 
-        public BrainChunkCache(BrainCoordinateSystem coords, long maxBytes = 512L * 1024 * 1024,
-                               int maxBricks = 58)
+        public BrainChunkCache(BrainCoordinateSystem coords, Matrix4x4 worldMatrix,
+                               long maxBytes = 512L * 1024 * 1024, int maxBricks = 256)
         {
-            _coords = coords; _maxBytes = maxBytes; _maxBricks = maxBricks;
+            _coords = coords; _worldMatrix = worldMatrix; _maxBytes = maxBytes; _maxBricks = maxBricks;
         }
 
         /// <summary>Do we already hold this slab at an equal-or-finer LOD? (skip re-download)</summary>
@@ -51,7 +52,7 @@ namespace BrainVolume
             if (_bricks.TryGetValue(zi, out var cur) && cur.Level <= chunk.Level)
                 return false;                          // already equal/finer -> keep
 
-            var brick = Brick.Create(chunk, _coords);
+            var brick = Brick.Create(chunk, _coords, _worldMatrix);
             if (cur != null) { BytesUsed -= cur.VoxelBytes; cur.Dispose(); _lru.Remove(zi); }
             _bricks[zi] = brick; BytesUsed += brick.VoxelBytes; _lru.AddFirst(zi);
             EvictIfNeeded();

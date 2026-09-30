@@ -1,8 +1,18 @@
 {
   "size": 2048,
   "mode": "region",
-  "opacity": 0.6,
-  "quality": 160,
+  "opacity": 1.1,
+  "quality": 224,
+  "render": {
+    "mode": 0,
+    "wl": 0.31,
+    "ww": 0.46,
+    "thresh": 0.04,
+    "iso": 0.33,
+    "light": 0.8,
+    "cmap": 0,
+    "jitter": true
+  },
   "center": { "fx": 0.5, "fy": 0.5, "fz": 0.5 },
   "roiView": { "yaw": 0.5, "pitch": 0.3, "zoom": 1.0 },
   "pickerView": { "yaw": 0.6, "pitch": 0.35, "zoom": 1.0 }

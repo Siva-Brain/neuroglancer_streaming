@@ -30,6 +30,29 @@
   #saved{font-size:11px;color:#39d98a;opacity:0;transition:opacity .2s;}
   #ctr{font-size:11px;color:#f5c451;}
   #hint{position:fixed;bottom:6px;left:50%;transform:translateX(-50%);color:#5f6b82;text-align:center;}
+  /* ---- visualization control panel (right edge) ---- */
+  #panel{position:fixed;top:46px;right:10px;z-index:6;width:236px;
+         background:rgba(8,12,20,.94);border:1px solid #223049;border-radius:10px;
+         padding:10px 12px 12px;backdrop-filter:blur(3px);max-height:calc(100vh - 90px);overflow:auto;}
+  #panel.collapsed{width:auto;padding:6px 10px;}
+  #panel.collapsed .pbody{display:none;}
+  #panel h4{margin:0 0 8px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#8fb4ff;
+            display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none;}
+  #panel h4 .caret{color:#5f6b82;font-size:12px;}
+  .row{display:flex;align-items:center;gap:6px;margin:7px 0;}
+  .row label{flex:0 0 58px;color:#9fb0cc;}
+  .row input[type=range]{flex:1;min-width:0;accent-color:#5b8bff;}
+  .row select{flex:1;min-width:0;}
+  .row .val{flex:0 0 40px;text-align:right;color:#f5c451;font-size:11px;}
+  .row.check{gap:8px;} .row.check label{flex:1;}
+  .seg{display:flex;gap:4px;margin:6px 0 10px;}
+  .seg button{flex:1;font:11px ui-monospace,monospace;color:#cfe0ff;background:#16233a;
+              border:1px solid #2c405e;border-radius:6px;padding:4px 0;cursor:pointer;}
+  .seg button:hover{background:#1e3153;} .seg button.on{background:#2b60c0;border-color:#4f86e0;color:#fff;}
+  .hr{height:1px;background:#1b2740;margin:9px 0;}
+  .grp{color:#5f6b82;font-size:10px;letter-spacing:.05em;text-transform:uppercase;margin:2px 0 4px;}
+  .iso-only{display:none;} body.mode-iso .iso-only{display:flex;}
+  .light-only{} body.mode-mip .light-only{display:none;}
 </style>
 </head>
 <body>
@@ -46,7 +69,7 @@
     <option value="voxel">same voxels / level</option>
   </select></label>
   <label>opacity <input id="opac" type="range" min="0.05" max="3" step="0.05" value="0.6" style="vertical-align:middle;width:80px"></label>
-  <label>quality <input id="qual" type="range" min="48" max="256" step="16" value="160" style="vertical-align:middle;width:70px"></label>
+  <label>quality <input id="qual" type="range" min="48" max="384" step="16" value="160" style="vertical-align:middle;width:70px"></label>
   <span id="ctr">center 50.0% , 50.0%</span>
   <button id="btnDefault" class="mini" title="save the current view as the backend default (roi_settings.json)">★ default</button>
   <button id="btnReset" class="mini" title="reset to the backend default">⟲ reset</button>
@@ -54,6 +77,44 @@
   <span id="conn" class="st">connecting…</span>
 </div>
 <div id="hint">LEFT · pick center: drag crosshair on a slice · scroll = through-plane slice · release to fetch &nbsp;|&nbsp; RIGHT · L0·L2·L4·L7: drag = rotate all · scroll = zoom all (synced)</div>
+
+<div id="panel">
+  <h4 id="pTitle">visualization <span class="caret">▾</span></h4>
+  <div class="pbody">
+    <div class="grp">preset</div>
+    <div class="seg" id="presets">
+      <button data-preset="solid">solid</button>
+      <button data-preset="structure">structure</button>
+      <button data-preset="xray">x-ray</button>
+      <button data-preset="surface">surface</button>
+    </div>
+
+    <div class="grp">mode</div>
+    <div class="seg" id="modeSeg">
+      <button data-mode="0">lit DVR</button>
+      <button data-mode="1">MIP</button>
+      <button data-mode="2">iso</button>
+    </div>
+
+    <div class="row"><label>colormap</label>
+      <select id="pCmap"><option value="0">bone</option><option value="1">gray</option>
+        <option value="2">hot</option><option value="3">viridis</option></select></div>
+
+    <div class="hr"></div>
+    <div class="grp">contrast (transfer function)</div>
+    <div class="row"><label>level</label><input id="pWL" type="range" min="0" max="1" step="0.01"><span class="val" id="vWL"></span></div>
+    <div class="row"><label>width</label><input id="pWW" type="range" min="0.02" max="1" step="0.01"><span class="val" id="vWW"></span></div>
+    <div class="row"><label>threshold</label><input id="pThresh" type="range" min="0" max="0.4" step="0.005"><span class="val" id="vThresh"></span></div>
+
+    <div class="hr"></div>
+    <div class="grp">depth &amp; solidity</div>
+    <div class="row light-only"><label>lighting</label><input id="pLight" type="range" min="0" max="1" step="0.02"><span class="val" id="vLight"></span></div>
+    <div class="row light-only"><label>density</label><input id="pOpac" type="range" min="0.05" max="3" step="0.05"><span class="val" id="vOpac"></span></div>
+    <div class="row iso-only"><label>iso value</label><input id="pIso" type="range" min="0" max="1" step="0.01"><span class="val" id="vIso"></span></div>
+    <div class="row"><label>quality</label><input id="pQual" type="range" min="48" max="384" step="16"><span class="val" id="vQual"></span></div>
+    <div class="row check"><input id="pJitter" type="checkbox"><label for="pJitter">smooth (ray jitter)</label></div>
+  </div>
+</div>
 
 <script src="https://cdn.jsdelivr.net/npm/gl-matrix@3.4.3/gl-matrix-min.js"></script>
 <script>
@@ -73,6 +134,19 @@ if(!gl){ document.getElementById("conn").textContent="NO WEBGL2"; }
 let fx = 0.5, fy = 0.5, fz = 0.5;
 let lastFx = 0.5, lastFy = 0.5;    // last center actually fetched
 
+// ---- render parameters (driven by the control panel) ----
+// opacity/quality mirror the top-bar sliders; the rest are the new controls.
+const params = {
+  opacity:0.6, quality:160,
+  mode:0,            // 0 lit-DVR, 1 MIP, 2 isosurface
+  wl:0.35, ww:0.55,  // window level / width -> contrast on the tissue band
+  thresh:0.02,       // density floor (cuts low haze -> continuous solid)
+  iso:0.30,          // isosurface value
+  light:0.6,         // gradient-shading strength (reveals inner structure)
+  cmap:0,            // 0 bone 1 gray 2 hot 3 viridis
+  jitter:true,       // dithered ray start -> no step banding
+};
+
 // ---- volume raymarch program (picker L4 volume + all four ROI panels) ----
 const VERT=`#version 300 es
 layout(location=0) in vec3 aPos; uniform mat4 uViewProj,uModel; out vec3 vLocal;
@@ -81,18 +155,63 @@ const FRAG=`#version 300 es
 precision highp float; precision highp sampler3D;
 in vec3 vLocal; out vec4 frag;
 uniform vec3 uCamLocal; uniform sampler3D uVol; uniform int uSteps; uniform float uOpacity;
+uniform int uMode;       // 0=DVR (lit), 1=MIP, 2=isosurface
+uniform float uWL,uWW;   // transfer-function window level / width on density
+uniform float uThresh;   // density floor (cuts the low haze)
+uniform float uIso;      // iso value for isosurface mode
+uniform float uLight;    // gradient-shading strength 0..1
+uniform int uCmap;       // 0=bone 1=gray 2=hot 3=viridis
+uniform vec3 uTexel;     // 1/dims, for gradient central differences
+uniform float uJitter;   // 0/1 dithered ray start (kills step banding)
 vec2 hit(vec3 o,vec3 d){ vec3 iv=1.0/d; vec3 a=(vec3(0.0)-o)*iv,b=(vec3(1.0)-o)*iv;
   vec3 n=min(a,b),f=max(a,b); return vec2(max(max(n.x,n.y),n.z),min(min(f.x,f.y),f.z)); }
+// scalar field = signal density weighted by tissue-ness (matches the slice view)
+float raw(vec3 p){ vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }
+// window/level transfer -> contrast-stretched [0,1]
+float tf(float v){ return clamp((v-(uWL-uWW*0.5))/max(uWW,1e-4),0.0,1.0); }
+vec3 grad(vec3 p){ return vec3(
+  raw(p+vec3(uTexel.x,0,0))-raw(p-vec3(uTexel.x,0,0)),
+  raw(p+vec3(0,uTexel.y,0))-raw(p-vec3(0,uTexel.y,0)),
+  raw(p+vec3(0,0,uTexel.z))-raw(p-vec3(0,0,uTexel.z))); }
+vec3 cmap(float t){
+  if(uCmap==1) return vec3(t);
+  if(uCmap==2) return clamp(vec3(t*3.0,t*3.0-1.0,t*3.0-2.0),0.0,1.0);          // hot
+  if(uCmap==3) return clamp(vec3(0.28+0.9*t-0.3*t*t,0.02+1.4*t-0.6*t*t,        // viridis-ish
+                                 0.4+0.6*t-1.2*t*t+0.6*t*t*t),0.0,1.0);
+  return mix(vec3(0.52,0.60,0.80),vec3(0.99),t); }                            // bone
 void main(){
   vec3 d=normalize(vLocal-uCamLocal); vec2 t=hit(uCamLocal,d); t.x=max(t.x,0.0);
   if(t.y<=t.x) discard;
-  int N=uSteps; float dt=(t.y-t.x)/float(N); vec3 oc=vec3(0.0); float oa=0.0;
-  for(int i=0;i<256;i++){ if(i>=N) break;
-    vec3 p=uCamLocal+d*(t.x+(float(i)+0.5)*dt);
-    vec2 s=texture(uVol,p).rg; float tis=1.0-s.r; float dn=s.g*tis;
-    if(dn>0.004){ float a=1.0-exp(-dn*uOpacity*dt*60.0);
-      vec3 c=mix(vec3(0.52,0.60,0.80),vec3(0.99),tis);
-      oc+=(1.0-oa)*a*c; oa+=(1.0-oa)*a; if(oa>0.995) break; } }
+  int N=uSteps; float dt=(t.y-t.x)/float(N);
+  float j = uJitter>0.5 ? fract(sin(dot(gl_FragCoord.xy,vec2(12.9898,78.233)))*43758.5) : 0.5;
+  float t0 = t.x + j*dt;
+  if(uMode==1){                                   // ---- MIP ----
+    float m=0.0;
+    for(int i=0;i<512;i++){ if(i>=N) break;
+      float v=tf(raw(uCamLocal+d*(t0+float(i)*dt))); m=max(m,v); }
+    if(m<=uThresh) discard;
+    frag=vec4(cmap(m),1.0); return;
+  }
+  if(uMode==2){                                   // ---- isosurface ----
+    for(int i=0;i<512;i++){ if(i>=N) break;
+      vec3 p=uCamLocal+d*(t0+float(i)*dt);
+      if(tf(raw(p))>=uIso){
+        vec3 g=grad(p); vec3 n=length(g)>1e-4?-normalize(g):-d;
+        float diff=max(dot(n,-d),0.0);
+        frag=vec4(cmap(uIso)*(0.25+0.85*diff),1.0); return; } }
+    discard;
+  }
+  vec3 oc=vec3(0.0); float oa=0.0;                // ---- lit DVR ----
+  for(int i=0;i<512;i++){ if(i>=N) break;
+    vec3 p=uCamLocal+d*(t0+float(i)*dt);
+    float v0=raw(p); if(v0<uThresh) continue;
+    float v=tf(v0); if(v<=0.0) continue;
+    float a=1.0-exp(-v*uOpacity*dt*60.0);
+    vec3 c=cmap(v);
+    if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);
+      vec3 n=gm>1e-4?-g/gm:vec3(0.0); float diff=max(dot(n,-d),0.0);
+      c*=mix(1.0,0.2+0.9*diff,uLight*clamp(gm*8.0,0.0,1.0)); }
+    oc+=(1.0-oa)*a*c; oa+=(1.0-oa)*a; if(oa>0.995) break; }
   frag=vec4(oc,oa); }`;
 
 // ---- slice program (picker orthogonal sections) ----
@@ -106,6 +225,7 @@ const SFRAG=`#version 300 es
 precision highp float; precision highp sampler3D;
 in vec2 vUv; out vec4 frag;
 uniform sampler3D uVol; uniform int uAxis; uniform float uSlice; uniform int uReady;
+uniform float uWL,uWW;                       // shared window/level (same as volume)
 void main(){
   if(uReady==0){ frag=vec4(0.02,0.03,0.05,1.0); return; }
   float u=vUv.x, w=1.0-vUv.y;               // screen top -> plane origin
@@ -114,7 +234,7 @@ void main(){
   else if(uAxis==1) p=vec3(u, uSlice, w);    // coronal XZ
   else              p=vec3(uSlice, u, w);    // sagittal YZ
   vec2 s=texture(uVol,p).rg; float tis=1.0-s.r; float dn=s.g*tis;
-  float g=clamp(dn*1.9+tis*0.10, 0.0, 1.0);
+  float g=clamp((dn-(uWL-uWW*0.5))/max(uWW,1e-4), 0.0, 1.0);
   frag=vec4(vec3(g),1.0); }`;
 
 function mk(t,s){const o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
@@ -125,10 +245,16 @@ function link(vs,fs){const p=gl.createProgram();
 const prog=link(VERT,FRAG);
 const L={vp:gl.getUniformLocation(prog,"uViewProj"),model:gl.getUniformLocation(prog,"uModel"),
   cam:gl.getUniformLocation(prog,"uCamLocal"),vol:gl.getUniformLocation(prog,"uVol"),
-  steps:gl.getUniformLocation(prog,"uSteps"),opacity:gl.getUniformLocation(prog,"uOpacity")};
+  steps:gl.getUniformLocation(prog,"uSteps"),opacity:gl.getUniformLocation(prog,"uOpacity"),
+  mode:gl.getUniformLocation(prog,"uMode"),wl:gl.getUniformLocation(prog,"uWL"),
+  ww:gl.getUniformLocation(prog,"uWW"),thresh:gl.getUniformLocation(prog,"uThresh"),
+  iso:gl.getUniformLocation(prog,"uIso"),light:gl.getUniformLocation(prog,"uLight"),
+  cmap:gl.getUniformLocation(prog,"uCmap"),texel:gl.getUniformLocation(prog,"uTexel"),
+  jitter:gl.getUniformLocation(prog,"uJitter")};
 const sprog=link(SVERT,SFRAG);
 const SL={vol:gl.getUniformLocation(sprog,"uVol"),axis:gl.getUniformLocation(sprog,"uAxis"),
-  slice:gl.getUniformLocation(sprog,"uSlice"),ready:gl.getUniformLocation(sprog,"uReady")};
+  slice:gl.getUniformLocation(sprog,"uSlice"),ready:gl.getUniformLocation(sprog,"uReady"),
+  wl:gl.getUniformLocation(sprog,"uWL"),ww:gl.getUniformLocation(sprog,"uWW")};
 
 // unit cube for raymarch
 const cube=new Float32Array([
@@ -148,10 +274,10 @@ gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,2,gl.FLOAT,false,0,0);
 gl.bindVertexArray(null);
 
 // ---- data holders ----
-const picker = {tex:null, dx:0,dy:0,dz:0, bmin:[-.5,-.5,-.5],bmax:[.5,.5,.5], status:"queued"};
+const picker = {tex:null, dx:0,dy:0,dz:0, nx:1,ny:1,nz:1, bmin:[-.5,-.5,-.5],bmax:[.5,.5,.5], status:"queued"};
 const roi = {};   // level -> {tex,bmin,bmax,status,dims,mm,um}
 LEVELS.forEach(lv=>roi[lv]={tex:null,bmin:[-.5,-.5,-.5],bmax:[.5,.5,.5],
-  status:"queued",dims:"",mm:"",um:""});
+  status:"queued",dims:"",mm:"",um:"",nx:1,ny:1,nz:1});
 // One SHARED camera drives all four ROI panels (same physical ROI, so they
 // rotate/zoom together); the picker's L4 volume has its own. zoom=1 => fit pane.
 let roiCam    = {yaw:0.5, pitch:0.3, zoom:1.0};
@@ -335,8 +461,14 @@ function drawVolume(state,cam,r){
   mat4.invert(inv,model);
   gl.uniformMatrix4fv(L.vp,false,vp); gl.uniformMatrix4fv(L.model,false,model);
   gl.uniform3fv(L.cam,vec3.transformMat4([],cp,inv));
-  gl.uniform1i(L.steps,+document.getElementById("qual").value);
-  gl.uniform1f(L.opacity,+document.getElementById("opac").value);
+  gl.uniform1i(L.steps,params.quality);
+  gl.uniform1f(L.opacity,params.opacity);
+  gl.uniform1i(L.mode,params.mode);
+  gl.uniform1f(L.wl,params.wl); gl.uniform1f(L.ww,params.ww);
+  gl.uniform1f(L.thresh,params.thresh); gl.uniform1f(L.iso,params.iso);
+  gl.uniform1f(L.light,params.light); gl.uniform1i(L.cmap,params.cmap);
+  gl.uniform1f(L.jitter,params.jitter?1:0);
+  gl.uniform3f(L.texel,1/Math.max(1,state.nx),1/Math.max(1,state.ny),1/Math.max(1,state.nz));
   gl.bindTexture(gl.TEXTURE_3D,state.tex); gl.drawArrays(gl.TRIANGLES,0,36);
 }
 function drawSlice(v){
@@ -346,6 +478,7 @@ function drawSlice(v){
   gl.uniform1i(SL.axis,v.axis);
   gl.uniform1f(SL.slice, v.axis===0?fz : v.axis===1?fy : fx);
   gl.uniform1i(SL.ready, (picker.status==="ready"&&picker.tex)?1:0);
+  gl.uniform1f(SL.wl,params.wl); gl.uniform1f(SL.ww,params.ww);
   if(picker.tex) gl.bindTexture(gl.TEXTURE_3D,picker.tex);
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 }
@@ -374,6 +507,7 @@ async function loadPicker(){
     const buf=await (await fetch(url)).arrayBuffer();
     const b=parse(buf); picker.tex=upload(b);
     picker.dx=b.dx; picker.dy=b.dy; picker.dz=b.dz;
+    picker.nx=b.dx; picker.ny=b.dy; picker.nz=b.dz;
     picker.bmin=b.bmin; picker.bmax=b.bmax;
     picker.status="ready";
   }catch(e){ picker.status="error"; console.error("picker",e); conn.className="st"; conn.textContent="OFFLINE"; }
@@ -408,6 +542,7 @@ async function loadRoi(){
       const buf=await (await fetch(url)).arrayBuffer();
       if(myGen!==roiGen) return;
       const b=parse(buf); c.tex=upload(b); c.bmin=b.bmin; c.bmax=b.bmax;
+      c.nx=b.dx; c.ny=b.dy; c.nz=b.dz;
       c.dims=`${b.dx}×${b.dy}×${b.dz}`; c.status="ready";
     }catch(e){ c.status="error"; console.error("L"+lv,e); }
   }
@@ -425,7 +560,9 @@ const numOr=(v,d)=>Number.isFinite(+v)?+v:d;
 function collectSettings(){
   return {
     size:+$("selSize").value, mode:$("selMode").value,
-    opacity:+$("opac").value, quality:+$("qual").value,
+    opacity:params.opacity, quality:params.quality,
+    render:{mode:params.mode,wl:params.wl,ww:params.ww,thresh:params.thresh,
+            iso:params.iso,light:params.light,cmap:params.cmap,jitter:params.jitter},
     center:{fx,fy,fz},
     roiView:{yaw:roiCam.yaw,pitch:roiCam.pitch,zoom:roiCam.zoom},
     pickerView:{yaw:pickerCam.yaw,pitch:pickerCam.pitch,zoom:pickerCam.zoom},
@@ -436,14 +573,23 @@ function applySettings(s){                     // partial-safe: only sets presen
   if(s.size!=null){ const v=String(s.size);
     if([...$("selSize").options].some(o=>o.value===v)) $("selSize").value=v; }
   if(s.mode) $("selMode").value=s.mode;
-  if(s.opacity!=null) $("opac").value=s.opacity;
-  if(s.quality!=null) $("qual").value=s.quality;
+  if(s.opacity!=null) params.opacity=numOr(s.opacity,params.opacity);
+  if(s.quality!=null) params.quality=numOr(s.quality,params.quality);
+  const r=s.render;
+  if(r&&typeof r==="object"){
+    params.mode=numOr(r.mode,params.mode); params.wl=numOr(r.wl,params.wl);
+    params.ww=numOr(r.ww,params.ww); params.thresh=numOr(r.thresh,params.thresh);
+    params.iso=numOr(r.iso,params.iso); params.light=numOr(r.light,params.light);
+    params.cmap=numOr(r.cmap,params.cmap);
+    if(r.jitter!=null) params.jitter=!!r.jitter;
+  }
   if(s.center){ fx=numOr(s.center.fx,fx); fy=numOr(s.center.fy,fy); fz=numOr(s.center.fz,fz);
                 lastFx=fx; lastFy=fy; }
   if(s.roiView){ roiCam.yaw=numOr(s.roiView.yaw,roiCam.yaw); roiCam.pitch=numOr(s.roiView.pitch,roiCam.pitch);
                  roiCam.zoom=numOr(s.roiView.zoom,roiCam.zoom); }
   if(s.pickerView){ pickerCam.yaw=numOr(s.pickerView.yaw,pickerCam.yaw); pickerCam.pitch=numOr(s.pickerView.pitch,pickerCam.pitch);
                     pickerCam.zoom=numOr(s.pickerView.zoom,pickerCam.zoom); }
+  syncUI();
 }
 function saveSettings(){
   try{ localStorage.setItem(LS_KEY,JSON.stringify(collectSettings())); }catch(e){}
@@ -472,13 +618,60 @@ async function resetToDefault(){
   flashSaved("reset ✓"); loadRoi();
 }
 
+// ---------- control panel <-> params ----------
+const fmt=(v,p=2)=>Number(v).toFixed(p);
+// push params -> every bound input, value label, and derived UI state
+function syncUI(){
+  const set=(id,v)=>{ const e=$(id); if(e) e.value=v; };
+  set("opac",params.opacity); set("pOpac",params.opacity); $("vOpac")&&($("vOpac").textContent=fmt(params.opacity));
+  set("qual",params.quality); set("pQual",params.quality); $("vQual")&&($("vQual").textContent=params.quality);
+  set("pWL",params.wl);       $("vWL").textContent=fmt(params.wl);
+  set("pWW",params.ww);       $("vWW").textContent=fmt(params.ww);
+  set("pThresh",params.thresh); $("vThresh").textContent=fmt(params.thresh,3);
+  set("pIso",params.iso);     $("vIso").textContent=fmt(params.iso);
+  set("pLight",params.light); $("vLight").textContent=fmt(params.light);
+  set("pCmap",params.cmap);
+  $("pJitter").checked=params.jitter;
+  [...document.querySelectorAll("#modeSeg button")].forEach(b=>b.classList.toggle("on",+b.dataset.mode===params.mode));
+  document.body.classList.toggle("mode-iso",params.mode===2);
+  document.body.classList.toggle("mode-mip",params.mode===1);
+}
+// bind a numeric input to a param key (both top-bar and panel copies share keys)
+function bindNum(id,key,parse=parseFloat){
+  const e=$(id); if(!e) return;
+  e.addEventListener("input",()=>{ params[key]=parse(e.value); syncUI(); scheduleSave(); });
+}
+bindNum("opac","opacity"); bindNum("pOpac","opacity");
+bindNum("qual","quality",v=>parseInt(v,10)); bindNum("pQual","quality",v=>parseInt(v,10));
+bindNum("pWL","wl"); bindNum("pWW","ww"); bindNum("pThresh","thresh");
+bindNum("pIso","iso"); bindNum("pLight","light");
+$("pCmap").addEventListener("change",()=>{ params.cmap=+$("pCmap").value; scheduleSave(); });
+$("pJitter").addEventListener("change",()=>{ params.jitter=$("pJitter").checked; scheduleSave(); });
+[...document.querySelectorAll("#modeSeg button")].forEach(b=>
+  b.addEventListener("click",()=>{ params.mode=+b.dataset.mode; syncUI(); scheduleSave(); }));
+
+// one-click looks that combine the levers
+const PRESETS={
+  solid:    {mode:0,light:0.4, opacity:1.5, wl:0.32,ww:0.50,thresh:0.03,cmap:0,jitter:true},
+  structure:{mode:0,light:0.9, opacity:0.9, wl:0.30,ww:0.44,thresh:0.05,cmap:0,jitter:true},
+  xray:     {mode:1,           wl:0.18,ww:0.70,thresh:0.02,cmap:1,jitter:true},
+  surface:  {mode:2,light:0.95,iso:0.33,     wl:0.10,ww:0.80,cmap:0,jitter:true},
+};
+[...document.querySelectorAll("#presets button")].forEach(b=>
+  b.addEventListener("click",()=>{ Object.assign(params,PRESETS[b.dataset.preset]); syncUI(); saveSettings(); }));
+
+// collapse / expand the panel
+$("pTitle").addEventListener("click",()=>{
+  const p=$("panel"), c=p.classList.toggle("collapsed");
+  $("pTitle").querySelector(".caret").textContent=c?"▸":"▾";
+});
+
 $("selSize").addEventListener("change",()=>{ loadRoi(); saveSettings(); });
 $("selMode").addEventListener("change",()=>{ loadRoi(); saveSettings(); });
-$("opac").addEventListener("input",scheduleSave);
-$("qual").addEventListener("input",scheduleSave);
 $("btnDefault").addEventListener("click",saveAsDefault);
 $("btnReset").addEventListener("click",resetToDefault);
 addEventListener("resize",()=>{ buildOverlay(); });
+syncUI();
 
 buildOverlay();
 requestAnimationFrame(draw);

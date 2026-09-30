@@ -54,10 +54,12 @@ DEFAULT_ZARR_ROOTS = [
     "http://3dstrokeviewer.humanbrain.in:8056/zarr_files/587_ALL_3d.zarr",
 ]
 ZARR_ROOTS = list(DEFAULT_ZARR_ROOTS)
-# True acquisition voxel size (z,y,x microns) of the finest level. The block
-# Zarrs carry a placeholder OME scale (8 um x/y, ~62 um z -> absurd 192 mm block);
-# the real optics are 0.5 um x/y, 20 um z (~12 mm block). None -> trust metadata.
-VOXEL_UM_FINEST = (20.0, 0.5, 0.5)
+# Fallback finest voxel size (z,y,x microns) for blocks NOT in the authoritative
+# histology_blocks.json map. The correct per-block sizes (8 um x/y + per-block z)
+# come from that map — the 8 um x/y OME scale is REAL (each block is a ~192 mm
+# sagittal slab); the earlier 0.5 um override was wrong (it made 12 mm cubes that
+# would not reassemble). See BLOCK_META / _block_voxel_um below. None -> metadata.
+VOXEL_UM_FINEST = (20.0, 8.0, 8.0)
 MIN_LEVEL = 3
 DELAY_MS = 0.0
 BANDWIDTH_LIMIT_MBPS = 0.0        # 0 = unlimited
@@ -99,6 +101,36 @@ def _roi_cache_put(key, payload: bytes):
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLIENT_HTML = os.path.normpath(os.path.join(HERE, "..", "client", "volume.html"))
+
+# ---- authoritative per-block OME geometry + placement (from the Neuroglancer
+# 3d-stroke-viewer app: apps/frontend/src/viewer/histology_blocks.ts). Gives the
+# TRUE finest voxel size and the omeToRas affine that reassembles blocks into one
+# brain in shared RAS mm. ----
+HISTOLOGY_BLOCKS_JSON = os.path.join(HERE, "transforms", "histology_blocks.json")
+
+
+def _load_block_meta():
+    try:
+        with open(HISTOLOGY_BLOCKS_JSON) as f:
+            data = json.load(f)
+        brain = data.get("brain")
+        return {b["id"]: {**b, "brain": brain} for b in data.get("blocks", [])}
+    except Exception as e:
+        print(f"[dgx-zarr] histology_blocks.json not loaded ({e}); "
+              f"falling back to global voxel size, no anatomical transforms")
+        return {}
+
+
+BLOCK_META = _load_block_meta()
+
+
+def _block_voxel_um(bid: str):
+    """Per-block finest voxel size (z,y,x microns): authoritative map, else fallback."""
+    m = BLOCK_META.get(bid)
+    if not m:
+        return VOXEL_UM_FINEST
+    ip = m.get("inPlaneScaleMeters", 8e-6) * 1e6
+    return (m["zScaleMeters"] * 1e6, ip, ip)
 
 app = FastAPI(title="DGX Brain Streaming (Zarr, multi-block)", version="3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -168,7 +200,7 @@ def build_blocks() -> "Dict[str, BlockCtx]":
             bid = f"{bid}_{seen[bid]}"
         else:
             seen[bid] = 0
-        src = HttpZarrBrainSource(url, voxel_um_finest=VOXEL_UM_FINEST)
+        src = HttpZarrBrainSource(url, voxel_um_finest=_block_voxel_um(bid))
         mgr = ChunkManager(src, LruChunkCache(CACHE_BYTES),
                            workers=WORKERS, processor=_gpu, max_xy=GPU_MAX_XY)
         sel = CameraViewSelector(src, min_level=MIN_LEVEL)
@@ -380,7 +412,9 @@ def roi_page():
 
 ROI_SETTINGS_JSON = os.path.join(HERE, "roi_settings.json")
 _ROI_SETTINGS_FALLBACK = {
-    "size": 2048, "mode": "region", "opacity": 0.6, "quality": 160,
+    "size": 2048, "mode": "region", "opacity": 1.1, "quality": 224,
+    "render": {"mode": 0, "wl": 0.31, "ww": 0.46, "thresh": 0.04,
+               "iso": 0.33, "light": 0.8, "cmap": 0, "jitter": True},
     "center": {"fx": 0.5, "fy": 0.5, "fz": 0.5},
     "roiView": {"yaw": 0.5, "pitch": 0.3, "zoom": 1.0},
     "pickerView": {"yaw": 0.6, "pitch": 0.35, "zoom": 1.0},
@@ -411,6 +445,58 @@ def roi_settings_put(payload: dict = Body(...)):
             json.dump(payload, f, indent=2)
         os.replace(tmp, ROI_SETTINGS_JSON)      # atomic swap
     return {"status": "saved"}
+
+
+# ---------- anatomical block transforms (OME-Zarr -> shared RAS mm) ----------
+# Replicates the Neuroglancer app: each block's OME-Zarr is placed by its omeToRas
+# affine (BLOCK_META). omeToRas maps OME physical mm -> RAS mm, with its 3 input
+# columns acting on the OME axes in z,y,x order and the last column a translation
+# in mm; it is fed physical mm = voxel * (zScaleMeters, inPlaneScale, inPlaneScale)
+# — the same per-block scales this server now bakes with (_block_voxel_um).
+#
+# The viewer's brick coords are centred physical mm in LOCAL (x,y,z) (see
+# chunks/manager.world_bbox_mm). So for a local point p=(x,y,z):
+#   ome(z,y,x) = (p + halfExtent)  reordered to z,y,x
+#   RAS(x,y,z) = A @ ome + t
+# giving a 4x4 W (col-major) with columns from A reversed (local x<-col z-index):
+#   W_lin[:,x]=A[:,2]  W_lin[:,y]=A[:,1]  W_lin[:,z]=A[:,0]
+#   W_trans   = A @ (halfEz,halfEy,halfEx) + t
+# W is non-rigid on purpose (omeToRas carries the anisotropic z scaling).
+
+
+@app.get("/api/transforms")
+def transforms_get(brain: str = Query(None)):
+    """Per-block world matrices placing each block's OME-Zarr into shared RAS mm,
+    matching the Neuroglancer reassembly. Col-major 4x4 mapping the viewer's LOCAL
+    centred-mm (x,y,z) frame -> RAS (x,y,z). Keyed by block id."""
+    out, brains = {}, {}
+    for bid, ctx in _blocks.items():
+        m = BLOCK_META.get(bid)
+        if not m or "omeToRas" not in m:
+            continue
+        if brain and m.get("brain") != brain:
+            continue
+        A = [row[:3] for row in m["omeToRas"]]              # rows x,y,z; cols z,y,x
+        t = [row[3] for row in m["omeToRas"]]
+        Ez, Ey, Ex = (e * 1000.0 for e in ctx.source.get_metadata().extent_m)  # mm (z,y,x)
+        half = [Ez / 2.0, Ey / 2.0, Ex / 2.0]              # z,y,x — matches A's columns
+        tr = [A[i][0] * half[0] + A[i][1] * half[1] + A[i][2] * half[2] + t[i]
+              for i in range(3)]
+        W = [A[0][2], A[1][2], A[2][2], 0.0,               # local x  <- ome col x (idx 2)
+             A[0][1], A[1][1], A[2][1], 0.0,               # local y  <- ome col y (idx 1)
+             A[0][0], A[1][0], A[2][0], 0.0,               # local z  <- ome col z (idx 0)
+             tr[0],   tr[1],   tr[2],   1.0]
+        out[bid] = {"brain": m.get("brain"), "block": bid, "matrix": W,
+                    "matrix_origin": W, "matrix_center": W,   # single correct matrix
+                    "centerX": m.get("centerX"),
+                    "extent_mm": [Ex, Ey, Ez]}
+        brains.setdefault(m.get("brain"), []).append(bid)
+    # `transforms` is keyed by block id (browser); `list` is the same data as an
+    # array (JsonUtility-friendly for the Unity client, which can't parse dict keys).
+    lst = [{"block": bid, "matrix": out[bid]["matrix"],
+            "centerX": out[bid]["centerX"], "extent_mm": out[bid]["extent_mm"]}
+           for bid in out]
+    return {"space": "RAS-mm", "brains": brains, "transforms": out, "list": lst}
 
 
 def _roi_side(mode: str, size: int, level: int) -> int:

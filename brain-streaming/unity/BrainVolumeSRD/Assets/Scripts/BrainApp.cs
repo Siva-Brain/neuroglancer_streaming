@@ -1,12 +1,15 @@
+using System.Collections.Generic;
+using System.Threading.Tasks;
 using UnityEngine;
 
 namespace BrainVolume
 {
     /// <summary>
-    /// Orchestrator. The ONLY class that touches both networking and rendering;
-    /// each side stays unaware of the other. Boots (info -> coarse baseline),
-    /// then each frame posts the camera to the DGX and feeds the returned
-    /// priorities to the scheduler. Rendering reads the cache independently.
+    /// Orchestrator for the MULTI-BLOCK brain. Boots (dataset/info -> N blocks,
+    /// transforms -> per-block placement), gives each block its own cache +
+    /// scheduler, and each frame posts the camera (transformed into that block's
+    /// local frame) to the DGX and feeds the returned priorities. The renderer
+    /// composites every block's bricks into one brain in shared RAS space.
     /// </summary>
     public sealed class BrainApp : MonoBehaviour
     {
@@ -25,13 +28,12 @@ namespace BrainVolume
         public BrainCoordinateSystem coordinates = new BrainCoordinateSystem();
         public float viewIntervalSec = 0.35f;
         public float moveThreshold = 0.01f;
-        public int maxConcurrency = 6;
-        public int cacheMB = 512;
+        public int maxConcurrency = 8;                   // total across all blocks
+        public int cacheMB = 1024;                       // total budget, split per block
 
         public BrainStreamClient Client { get; private set; }
-        public BrainChunkCache Cache { get; private set; }
-        public RequestScheduler Scheduler { get; private set; }
         public DatasetInfo Info { get; private set; }
+        public List<BrainBlock> Blocks { get; } = new List<BrainBlock>();
         public bool ConnectionOk => Client != null && Client.Connected;
 
         // telemetry
@@ -39,6 +41,18 @@ namespace BrainVolume
         public float FrameMs { get; private set; }
         public float MbPerSec { get; private set; }
         public float LatencyMs => Client != null ? Client.LastLatencyMs : 0f;
+
+        // aggregate stats (across all blocks) for the HUD
+        public int ChunksRequested { get { int n = 0; foreach (var b in Blocks) n += b.Scheduler?.Requested ?? 0; return n; } }
+        public int ChunksReceived  { get { int n = 0; foreach (var b in Blocks) n += b.Scheduler?.Received ?? 0; return n; } }
+        public int BricksLoaded    { get { int n = 0; foreach (var b in Blocks) n += b.Cache?.Count ?? 0; return n; } }
+        public long CacheBytes     { get { long n = 0; foreach (var b in Blocks) n += b.Cache?.BytesUsed ?? 0; return n; } }
+        public int Evictions       { get { int n = 0; foreach (var b in Blocks) n += b.Cache?.Evictions ?? 0; return n; } }
+        public int InFlight        { get { int n = 0; foreach (var b in Blocks) n += b.Scheduler?.InFlight ?? 0; return n; } }
+        public int Pending         { get { int n = 0; foreach (var b in Blocks) n += b.Scheduler?.Pending ?? 0; return n; } }
+        public int TargetLevel     { get { int t = -1; foreach (var b in Blocks) { int v = b.Scheduler?.TargetLevel ?? -1; if (v >= 0 && (t < 0 || v < t)) t = v; } return t; } }
+        public long BytesReceivedTotal { get { long n = 0; foreach (var b in Blocks) n += b.Scheduler?.BytesReceived ?? 0; return n; } }
+        public int BlockCount => Blocks.Count;
 
         float _viewTimer, _bwTimer; long _bwLastBytes;
         Vector3 _lastPos; Vector3 _lastFwd; bool _firstView = true;
@@ -51,32 +65,56 @@ namespace BrainVolume
 
             Client = new BrainStreamClient(serverUrl) { Channels = channels };
             Info = await GetInfoRetry();
-            if (Info == null)
+            var blockInfos = Info?.blocks;
+            if (blockInfos == null || blockInfos.Length == 0)
             {
-                Debug.LogError($"[BrainApp] DGX not reachable at {serverUrl} — see warnings above. " +
-                    "If error mentions HTTP/insecure: Player Settings > Other Settings > " +
-                    "'Allow downloads over HTTP' = Always allowed.");
+                Debug.LogError($"[BrainApp] DGX not reachable / no blocks at {serverUrl}. " +
+                    "If HTTP is blocked: Player Settings > Other Settings > 'Allow downloads over HTTP' = Always.");
                 return;
             }
-            Debug.Log($"[BrainApp] CONNECTED to {serverUrl} — dataset '{Info.name}', " +
-                      $"{Info.levels?.Length} levels, {Info.baseline_chunks?.Length} baseline bricks, " +
-                      $"extent_mm={(Info.extent_mm != null ? string.Join(",", Info.extent_mm) : "?")}");
 
-            Cache = new BrainChunkCache(coordinates, (long)cacheMB * 1024 * 1024);
-            Scheduler = new RequestScheduler(Client, Cache, maxConcurrency);
-            if (volumeRenderer != null) { volumeRenderer.brainRoot = brainRoot; volumeRenderer.Bind(Cache); }
-            if (cameraController != null) cameraController.distance = coordinates.SuggestedDistance(Info.extent_mm);
+            // per-block placement matrices (omeToRas) from /api/transforms
+            var xf = await Client.GetTransformsAsync();
+            var mats = new Dictionary<string, Matrix4x4>();
+            if (xf?.list != null)
+                foreach (var t in xf.list) mats[t.block] = BrainCoordinateSystem.FromColMajor(t.matrix);
 
-            Scheduler.EnqueueBaseline(Info.baseline_chunks);   // coarse whole brain first
+            int n = blockInfos.Length;
+            long bytesPerBlock = (long)cacheMB * 1024 * 1024 / Mathf.Max(1, n);
+            int concPerBlock = Mathf.Max(2, maxConcurrency / Mathf.Max(1, n));
+
+            Blocks.Clear();
+            foreach (var bi in blockInfos)
+            {
+                if (!mats.TryGetValue(bi.block_id, out var W))
+                {
+                    W = Matrix4x4.identity;
+                    Debug.LogWarning($"[BrainApp] block {bi.block_id}: no /api/transforms matrix — placed at origin.");
+                }
+                var cache = new BrainChunkCache(coordinates, W, bytesPerBlock);
+                var sched = new RequestScheduler(Client, cache, bi.block_id, concPerBlock);
+                Blocks.Add(new BrainBlock {
+                    Id = bi.block_id, Info = bi, WorldMatrix = W, WorldMatrixInv = W.inverse,
+                    Cache = cache, Scheduler = sched,
+                });
+            }
+
+            Debug.Log($"[BrainApp] CONNECTED to {serverUrl} — {n} blocks: " +
+                      string.Join(",", Blocks.ConvertAll(b => b.Id)));
+
+            if (volumeRenderer != null) { volumeRenderer.brainRoot = brainRoot; volumeRenderer.Bind(Blocks); }
+            FitView();
+
+            foreach (var b in Blocks) { b.Scheduler.EnqueueBaseline(b.Info.baseline_chunks); }
         }
 
-        async System.Threading.Tasks.Task<DatasetInfo> GetInfoRetry()
+        async Task<DatasetInfo> GetInfoRetry()
         {
             for (int i = 0; i < 3; i++)
             {
                 var info = await Client.GetDatasetInfoAsync();
-                if (info != null) return info;
-                await System.Threading.Tasks.Task.Delay(500);
+                if (info?.blocks != null && info.blocks.Length > 0) return info;
+                await Task.Delay(500);
             }
             return null;
         }
@@ -87,32 +125,58 @@ namespace BrainVolume
             Fps = FrameMs > 0.001f ? 1000f / FrameMs : 0f;
 
             _bwTimer += Time.unscaledDeltaTime;
-            if (_bwTimer >= 1f && Scheduler != null)
+            if (_bwTimer >= 1f && Blocks.Count > 0)
             {
-                MbPerSec = (Scheduler.BytesReceived - _bwLastBytes) / 1048576f / _bwTimer;
-                _bwLastBytes = Scheduler.BytesReceived; _bwTimer = 0f;
+                long tot = BytesReceivedTotal;
+                MbPerSec = (tot - _bwLastBytes) / 1048576f / _bwTimer;
+                _bwLastBytes = tot; _bwTimer = 0f;
             }
 
-            if (Info == null || targetCamera == null) return;
+            if (Blocks.Count == 0 || targetCamera == null) return;
             _viewTimer += Time.unscaledDeltaTime;
             if (_viewTimer < viewIntervalSec) return;
             _viewTimer = 0f;
 
+            bool anyBusy = InFlight != 0 || Pending != 0;
             bool moved = _firstView
                 || (targetCamera.transform.position - _lastPos).magnitude > moveThreshold
                 || (targetCamera.transform.forward - _lastFwd).magnitude > moveThreshold;
-            if (!moved && Scheduler.Pending == 0 && Scheduler.InFlight == 0) return;
+            if (!moved && !anyBusy) return;
 
             _lastPos = targetCamera.transform.position; _lastFwd = targetCamera.transform.forward;
             _firstView = false;
-            SendView();
+            foreach (var b in Blocks) SendView(b);
         }
 
-        async void SendView()
+        async void SendView(BrainBlock block)
         {
-            var cam = coordinates.ToCameraState(targetCamera, brainRoot);
-            var view = await Client.PostViewAsync(cam);
-            if (view != null) Scheduler.OnView(view);
+            var cam = coordinates.ToCameraState(targetCamera, brainRoot, block.WorldMatrixInv);
+            var view = await Client.PostViewAsync(cam, block.Id);
+            if (view != null) block.Scheduler.OnView(view);
+        }
+
+        /// <summary>Frame the camera on the fused brain (all blocks' RAS-mm boxes).</summary>
+        void FitView()
+        {
+            if (cameraController == null || Blocks.Count == 0) return;
+            Vector3 lo = Vector3.one * 1e9f, hi = Vector3.one * -1e9f;
+            foreach (var b in Blocks)
+            {
+                Vector3 h = b.HalfExtentMm();
+                for (int i = 0; i < 8; i++)
+                {
+                    var c = new Vector3((i & 1) != 0 ? h.x : -h.x,
+                                        (i & 2) != 0 ? h.y : -h.y,
+                                        (i & 4) != 0 ? h.z : -h.z);
+                    Vector3 ras = b.WorldMatrix.MultiplyPoint3x4(c);   // block-local mm -> RAS mm
+                    lo = Vector3.Min(lo, ras); hi = Vector3.Max(hi, ras);
+                }
+            }
+            Vector3 centerRas = (lo + hi) * 0.5f;
+            float radiusMm = Mathf.Max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z);
+            Matrix4x4 toWorld = brainRoot.localToWorldMatrix * coordinates.MmToUnityMatrix();
+            cameraController.target = toWorld.MultiplyPoint3x4(centerRas);
+            cameraController.distance = Mathf.Max(0.5f, radiusMm * coordinates.unitsPerMm * 1.6f);
         }
 
         void EnsureMaterial()
@@ -128,11 +192,14 @@ namespace BrainVolume
         public void CurrentLodRange(out int min, out int max)
         {
             min = -1; max = -1;
-            if (Cache == null) return;
-            foreach (var b in Cache.Bricks)
+            foreach (var blk in Blocks)
             {
-                if (min < 0 || b.Level < min) min = b.Level;
-                if (max < 0 || b.Level > max) max = b.Level;
+                if (blk.Cache == null) continue;
+                foreach (var b in blk.Cache.Bricks)
+                {
+                    if (min < 0 || b.Level < min) min = b.Level;
+                    if (max < 0 || b.Level > max) max = b.Level;
+                }
             }
         }
     }
