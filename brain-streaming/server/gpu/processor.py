@@ -9,6 +9,9 @@ What it does (all measured ~1-4 ms/brick warm on an A100):
     exceeds a cap (lets fine levels stream at a uniform, GPU-friendly size).
   * gradient_mag    : |grad| of a channel (edge/opacity enhancement).
   * enhance_contrast: stretch the grayscale channel for crisper tissue.
+  * sample_window / glass_pack : Nissl see-through DVR preprocessing --
+    per-block intensity normalization, light 3D denoise, and a precomputed
+    gradient channel so shading has no brick-border seams.
 
 GPU cost is negligible next to the ~170 ms HTTP fetch, so this is "free" quality.
 """
@@ -129,3 +132,66 @@ class GpuProcessor:
             f = xp.clip((f - a_lo) / (a_hi - a_lo), 0, 1) * 255.0
             g[..., channel] = f.astype(xp.uint8)
         return self._to_numpy(g)
+
+    # ---- Nissl "glass-brain" preprocessing ---------------------------------
+    def sample_window(self, a: np.ndarray, channel: int = 0,
+                      lo: float = 0.02, hi: float = 0.98) -> Tuple[float, float]:
+        """Return the (lo,hi) raw-intensity percentile window of one channel.
+
+        Computed once per block from a coarse volume; serialize() then maps this
+        window to 0..255 so every block shares one brightness range (kills the
+        inter-block seams in the reassembled brain)."""
+        xp, g = self._xp(a)
+        f = g[..., channel].astype(xp.float32)
+        if f.size == 0:
+            return (0.0, 255.0)
+        a_lo, a_hi = float(xp.quantile(f, lo)), float(xp.quantile(f, hi))
+        if a_hi - a_lo < 1e-3:
+            return (0.0, 255.0)
+        return (a_lo, a_hi)
+
+    @staticmethod
+    def _smooth_axis(xp, f, ax):
+        """Separable [1,2,1]/4 blur along one axis (edge-padded)."""
+        pad = [(0, 0)] * f.ndim
+        pad[ax] = (1, 1)
+        g = xp.pad(f, pad, mode="edge")
+        lo = [slice(None)] * f.ndim; lo[ax] = slice(0, -2)
+        mid = [slice(None)] * f.ndim; mid[ax] = slice(1, -1)
+        hi = [slice(None)] * f.ndim; hi[ax] = slice(2, None)
+        return 0.25 * g[tuple(lo)] + 0.5 * g[tuple(mid)] + 0.25 * g[tuple(hi)]
+
+    def glass_pack(self, a: np.ndarray, gray_idx: int = 0, mask_idx: int = 1,
+                   lohi: Optional[Tuple[float, float]] = None,
+                   smooth_axes=(0, 1, 2), device: Optional[int] = None) -> np.ndarray:
+        """Pack a Nissl brick for the see-through DVR as (z,y,x,3) uint8:
+            ch0 = normalized grayscale  (per-block window -> 0..255)
+            ch1 = tissue mask           (passed through)
+            ch2 = gradient magnitude    (precomputed shading, no brick seams)
+
+        The gray channel is lightly 3D-smoothed first (suppresses the z-lamination
+        striping typical of serial Nissl sections) and the gradient is taken on
+        that smoothed, normalized field so the client never calls grad() across
+        brick borders."""
+        if self.available and device is not None:
+            with _cp.cuda.Device(int(device) % self.device_count):
+                return self._glass_impl(a, gray_idx, mask_idx, lohi, smooth_axes)
+        return self._glass_impl(a, gray_idx, mask_idx, lohi, smooth_axes)
+
+    def _glass_impl(self, a, gray_idx, mask_idx, lohi, smooth_axes) -> np.ndarray:
+        xp, g = self._xp(a)
+        gray = g[..., gray_idx].astype(xp.float32)
+        mask = g[..., mask_idx].astype(xp.float32) if g.shape[-1] > mask_idx \
+            else xp.full(gray.shape, 255.0, xp.float32)
+        if lohi is not None and (lohi[1] - lohi[0]) > 1e-3:
+            gray = xp.clip((gray - lohi[0]) / (lohi[1] - lohi[0]), 0.0, 1.0) * 255.0
+        sm = gray
+        for ax in smooth_axes:
+            sm = self._smooth_axis(xp, sm, ax)
+        gz, gy, gx = xp.gradient(sm)
+        gm = xp.sqrt(gz * gz + gy * gy + gx * gx)
+        mx = float(gm.max()) if gm.size else 0.0
+        grad = (gm / mx * 255.0) if mx > 0 else gm
+        out = xp.stack([xp.clip(sm, 0, 255), mask, xp.clip(grad, 0, 255)],
+                       axis=-1).astype(xp.uint8)
+        return self._to_numpy(out)

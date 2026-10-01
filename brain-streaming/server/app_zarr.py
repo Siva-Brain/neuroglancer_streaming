@@ -67,6 +67,7 @@ CACHE_BYTES = 2 * 1024 * 1024 * 1024   # A100 box has 2 TB RAM; be generous
 WORKERS = 32                     # parallel prefetch workers (256 cores available)
 USE_GPU = True                   # A100 processing (falls back to CPU if absent)
 GPU_MAX_XY = 512                 # server-side downsample cap so bricks stay uniform
+GLASS = True                     # Nissl see-through preprocessing (normalize + gradient)
 PREFETCH_TOP = 8                 # warm this many top-priority chunks on each view
 ROI_WORKERS = 192                # parallel inner-chunk range GETs for ROI (DDN can take it)
 _roi_gpu_rr = 0                  # round-robin GPU selector for ROI resample
@@ -237,8 +238,10 @@ def _startup():
     # build every block's manager + GPU context now so /health is accurate and
     # the first client request doesn't pay CUDA init / metadata latency.
     build_blocks()
-    # prewarm the ROI viewer's default panels in the background (idle DGX work),
-    # so the first /roi page load is served from cache.
+    # compute each block's gray-intensity window (for glass normalization) and
+    # prewarm the ROI viewer's default panels -- both in the background (idle
+    # DGX work) so the first client request isn't blocked.
+    threading.Thread(target=_compute_norm_windows, daemon=True).start()
     threading.Thread(target=_prewarm_roi, daemon=True).start()
 
 
@@ -369,7 +372,7 @@ def prefetch(body: ChunkRequestBody, block: str = Query(None)):
 
 @app.get("/api/chunk/{chunk_id}")
 async def get_chunk(chunk_id: str, channels: str = Query("0,1,2,3"),
-                    block: str = Query(None)):
+                    block: str = Query(None), glass: int = Query(0)):
     m = get_block(block).manager
     try:
         lvl, coords = m.source.parse_chunk_id(chunk_id)
@@ -377,7 +380,7 @@ async def get_chunk(chunk_id: str, channels: str = Query("0,1,2,3"),
         raise HTTPException(400, f"bad chunk_id {chunk_id}")
     ch_list = [int(x) for x in channels.split(",") if x != ""]
     cd = m.get(lvl, coords)
-    payload = m.serialize(cd, ch_list)
+    payload = m.serialize(cd, ch_list, glass=bool(glass) and GLASS)
     await _throttle(len(payload))
     return Response(content=payload, media_type="application/octet-stream",
                     headers={"X-Chunk-Id": chunk_id, "X-Chunk-Status":
@@ -616,6 +619,32 @@ def _build_roi_payload(ctx: BlockCtx, level: int, size: int, mode: str, cap: int
     return header + np.ascontiguousarray(arr, np.uint8).tobytes()
 
 
+def _compute_norm_windows():
+    """Per-block gray-intensity normalization window for the glass look.
+
+    Each of the 5 blocks was stained/scanned separately, so their gray-level
+    distributions differ -- that mismatch is a big part of the inter-block seams
+    in the reassembled brain. We sample each block's coarsest level once, take a
+    robust (p2,p98) window of channel 0, and hand it to the manager; serialize()
+    then maps that window to 0..255 so every block shares one brightness range."""
+    if not GLASS:
+        return
+    build_blocks()
+    for bid in _order:
+        ctx = _blocks[bid]
+        try:
+            info = ctx.source.get_metadata()
+            lvl = info.coarsest_level
+            full = (slice(None), slice(None), slice(None))
+            vol = ctx.source.get_region(lvl, 0, full)        # (z,y,x,1) ch0
+            lo, hi = _gpu.sample_window(vol, channel=0, lo=0.02, hi=0.98)
+            ctx.manager.norm_lohi = (lo, hi)
+            print(f"[glass-norm] block {bid}: gray window=({lo:.1f},{hi:.1f}) "
+                  f"from L{lvl} {tuple(vol.shape[:3])}")
+        except Exception as e:  # noqa
+            print(f"[glass-norm] block {bid} failed: {e}")
+
+
 def _prewarm_roi():
     """Background: fill the ROI cache for the viewer's default panels so the
     first page load is instant. Uses the otherwise-idle DGX + parallel access."""
@@ -655,6 +684,10 @@ if __name__ == "__main__":
     ap.add_argument("--no-gpu", dest="gpu", action="store_false")
     ap.add_argument("--gpu-max-xy", type=int, default=512,
                     help="server-side resample cap so brick textures stay uniform (0=off)")
+    ap.add_argument("--glass", dest="glass", action="store_true", default=True,
+                    help="Nissl see-through preprocessing: per-block gray "
+                         "normalization + precomputed gradient channel (default on)")
+    ap.add_argument("--no-glass", dest="glass", action="store_false")
     ap.add_argument("--prefetch-top", type=int, default=8,
                     help="warm N top-priority chunks on each /view (0=off)")
     ap.add_argument("--voxel-um", default="20,0.5,0.5",
@@ -687,6 +720,7 @@ if __name__ == "__main__":
     _self.WORKERS = args.workers
     _self.USE_GPU = args.gpu
     _self.GPU_MAX_XY = args.gpu_max_xy
+    _self.GLASS = args.glass
     _self.PREFETCH_TOP = args.prefetch_top
     _self.VOXEL_UM_FINEST = voxel_um
 
@@ -695,6 +729,6 @@ if __name__ == "__main__":
         print(f"[dgx-zarr]   {u}")
     print(f"[dgx-zarr] voxel_um(z,y,x)={voxel_um if voxel_um else 'raw-metadata'}")
     print(f"[dgx-zarr] min_level={args.min_level} workers={args.workers} gpu={args.gpu} "
-          f"gpu_max_xy={args.gpu_max_xy} prefetch_top={args.prefetch_top} "
+          f"gpu_max_xy={args.gpu_max_xy} glass={args.glass} prefetch_top={args.prefetch_top} "
           f"delay={args.delay_ms}ms bw={args.bandwidth_limit}MB/s cache={args.cache_mb}MB")
     uvicorn.run(_self.app, host=args.host, port=args.port, log_level="info")

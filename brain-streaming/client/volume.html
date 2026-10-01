@@ -123,6 +123,7 @@
 
     <div class="glabel">depth &amp; quality</div>
     <div class="vrow"><label>density</label><input id="vDensity" type="range" min="0.1" max="4" step="0.1"><span class="val" id="lDensity"></span></div>
+    <div class="vrow"><label>structure</label><input id="vEdge" type="range" min="0" max="1" step="0.02"><span class="val" id="lEdge"></span></div>
     <div class="vrow"><label>lighting</label><input id="vLight" type="range" min="0" max="1" step="0.02"><span class="val" id="lLight"></span></div>
     <div class="vrow"><label>quality</label><input id="vQual" type="range" min="32" max="256" step="16"><span class="val" id="lQual"></span></div>
     <div class="vrow chk"><input id="vJitter" type="checkbox"><label for="vJitter">smooth (ray jitter)</label></div>
@@ -134,7 +135,8 @@
 const {mat4, mat3, vec3} = glMatrix;
 const API = location.origin;
 const MAX_CONCURRENCY = 6;               // global across all blocks
-const CHANNELS = "0,3";                  // grayscale + tissue mask (RG8)
+const CHANNELS = "0,3";                  // grayscale + tissue mask (server adds gradient -> RGB8)
+const GLASS = 1;                         // Nissl see-through preprocessing (server-side normalize + gradient)
 const LS_KEY = "brain-block-transforms-v1";
 
 // distinct-ish tints so overlapping blocks stay tellable apart
@@ -166,9 +168,11 @@ uniform int uColorMode;    // 0=grayscale 1=per-block tint 2=colormap
 uniform int uCmap;         // 0 bone 1 gray 2 hot 3 viridis (colormap mode)
 uniform float uWL, uWW;    // transfer-function window level / width (contrast)
 uniform float uThresh;     // density floor (cuts haze)
-uniform float uLight;      // gradient-shading strength 0..1
+uniform float uLight;      // gradient-shading strength 0..1 (live central-diff normal)
 uniform float uJitter;     // 0/1 dithered ray start
 uniform vec3 uTexel;       // 1/dims of THIS brick, for gradient central differences
+uniform int uHasGrad;      // 1 = brick has a server-precomputed gradient channel (.b)
+uniform float uEdge;       // structure/edge emphasis from precomputed gradient 0..1
 vec2 hitBox01(vec3 o, vec3 d){
   vec3 inv=1.0/d; vec3 t0=(vec3(0.0)-o)*inv, t1=(vec3(1.0)-o)*inv;
   vec3 tn=min(t0,t1), tf=max(t0,t1);
@@ -198,12 +202,17 @@ void main(){
     vec3 p=uCamLocal+d*(t.x+(float(i)+j)*dt);
     float v0=raw(p); if(v0<uThresh) continue;
     float v=tf(v0); if(v<=0.0) continue;
+    float ge = uHasGrad==1 ? texture(uVol,p).b : 0.0;     // precomputed |grad| (seam-free)
     float a=clamp(v*uAlpha*dt*40.0,0.0,1.0);
+    if(uHasGrad==1) a*=1.0+uEdge*3.0*ge;                  // gradient-opacity: emphasise structure
+    a=clamp(a,0.0,1.0);
     vec3 col;
     if(uColorMode==1)      col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
     else if(uColorMode==2) col=cmap(v);                                        // colormap
     else                   col=vec3(0.06+0.94*v);                              // grayscale
-    if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);
+    if(uHasGrad==1 && uEdge>0.0)                          // structural shading from stored |grad|
+      col*=mix(1.0, 0.55+1.4*ge, uEdge);
+    if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);   // optional live directional shading
       vec3 n=gm>1e-4?-g/gm:vec3(0.0); float diff=max(dot(n,-d),0.0);
       col*=mix(1.0,0.25+0.85*diff,uLight*clamp(gm*8.0,0.0,1.0)); }
     outC += (1.0-outA)*a*col;
@@ -223,18 +232,23 @@ const U = n => gl.getUniformLocation(prog,n);
 const loc = {vp:U("uViewProj"),model:U("uModel"),camL:U("uCamLocal"),tint:U("uTint"),
              vol:U("uVol"),alpha:U("uAlpha"),steps:U("uSteps"),
              colorMode:U("uColorMode"),cmap:U("uCmap"),wl:U("uWL"),ww:U("uWW"),
-             thresh:U("uThresh"),light:U("uLight"),jitter:U("uJitter"),texel:U("uTexel")};
+             thresh:U("uThresh"),light:U("uLight"),jitter:U("uJitter"),texel:U("uTexel"),
+             hasGrad:U("uHasGrad"),edge:U("uEdge")};
 
 // ---------- global visualization params (control panel) ----------
-const VIZ_KEY="brain-viz-v1";
+// v2 defaults are tuned for the Nissl glass/see-through look (server glass on):
+// wide window + low floor keeps the soft cloud, gradient "structure" emphasis
+// (seam-free, from the precomputed channel) etches the internal architecture.
+const VIZ_KEY="brain-viz-v2";
 const viz = {
-  colorMode:0,   // 0 grayscale (default, matches the reference brain), 1 per-block tint, 2 colormap
+  colorMode:2,   // 0 grayscale, 1 per-block tint, 2 colormap (bone, like the ROI cloud)
   cmap:0,        // bone/gray/hot/viridis (colormap mode)
-  wl:0.35, ww:0.55,   // contrast window level/width
-  thresh:0.02,   // density floor
-  density:1.0,   // -> uAlpha
-  quality:80,    // -> uSteps
-  light:0.0,     // gradient shading (off by default: brick borders can seam)
+  wl:0.30, ww:0.90,   // contrast window level/width (wide = soft ramp)
+  thresh:0.04,   // density floor (low = keep the cloud, not just dense laminae)
+  density:0.5,   // -> uAlpha
+  quality:160,   // -> uSteps (high = no slice banding)
+  light:0.0,     // live directional shading (off: can seam at brick borders)
+  edge:0.6,      // structure emphasis from the precomputed gradient (seam-free)
   jitter:true,
 };
 try{ const s=JSON.parse(localStorage.getItem(VIZ_KEY)||"null"); if(s) Object.assign(viz,s); }catch(e){}
@@ -325,7 +339,10 @@ function upload3D(b){
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_WRAP_R,gl.CLAMP_TO_EDGE);
-  gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8,b.dx,b.dy,b.dz,0,gl.RG,gl.UNSIGNED_BYTE,b.vox);
+  // glass bricks ship 3 channels [gray,mask,grad] -> RGB8; plain bricks are RG8.
+  if(b.nch>=3)      gl.texImage3D(gl.TEXTURE_3D,0,gl.RGB8,b.dx,b.dy,b.dz,0,gl.RGB,gl.UNSIGNED_BYTE,b.vox);
+  else if(b.nch===1)gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,  b.dx,b.dy,b.dz,0,gl.RED,gl.UNSIGNED_BYTE,b.vox);
+  else              gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8, b.dx,b.dy,b.dz,0,gl.RG, gl.UNSIGNED_BYTE,b.vox);
   return tex;
 }
 
@@ -360,10 +377,11 @@ async function fetchBrick(blk,zi,level,k,gk){
   S.inflight.add(gk); S.requested++;
   const cid=`L${level}.${zi}.0.0.0`;
   try{
-    const res=await fetch(`${API}/api/chunk/${cid}?channels=${CHANNELS}&block=${blk.id}`);
+    const res=await fetch(`${API}/api/chunk/${cid}?channels=${CHANNELS}&glass=${GLASS}&block=${blk.id}`);
     const buf=await res.arrayBuffer();
     S.received++; S.bytes+=buf.byteLength; S.bytesWin+=buf.byteLength; blk.have.add(k);
     const b=parseBrick(buf);
+    if(b.nch>=3) S.hasGrad=true;                        // server is sending the gradient channel
     const cur=blk.bricks.get(zi);
     if(cur && cur.level<=b.level){ /* finer already present */ }
     else{
@@ -464,6 +482,7 @@ function draw(now){
   gl.uniform1i(loc.colorMode,viz.colorMode); gl.uniform1i(loc.cmap,viz.cmap);
   gl.uniform1f(loc.wl,viz.wl); gl.uniform1f(loc.ww,viz.ww); gl.uniform1f(loc.thresh,viz.thresh);
   gl.uniform1f(loc.light,viz.light); gl.uniform1f(loc.jitter,viz.jitter?1:0);
+  gl.uniform1i(loc.hasGrad,S.hasGrad?1:0); gl.uniform1f(loc.edge,viz.edge);
   gl.activeTexture(gl.TEXTURE0);
 
   // collect every visible brick with its world model, sort back-to-front
@@ -621,6 +640,7 @@ function syncViz(){
   set("vWW",viz.ww); $("lWW").textContent=viz.ww.toFixed(2);
   set("vThresh",viz.thresh); $("lThresh").textContent=viz.thresh.toFixed(3);
   set("vDensity",viz.density); $("lDensity").textContent=viz.density.toFixed(1);
+  set("vEdge",viz.edge); $("lEdge").textContent=viz.edge.toFixed(2);
   set("vLight",viz.light); $("lLight").textContent=viz.light.toFixed(2);
   set("vQual",viz.quality); $("lQual").textContent=viz.quality;
   set("vCmap",viz.cmap); $("vJitter").checked=viz.jitter;
@@ -630,7 +650,7 @@ function syncViz(){
 function bindViz(id,key,parse=parseFloat){ const e=$(id); if(!e)return;
   e.addEventListener("input",()=>{ viz[key]=parse(e.value); syncViz(); saveViz(); }); }
 bindViz("vWL","wl"); bindViz("vWW","ww"); bindViz("vThresh","thresh");
-bindViz("vDensity","density"); bindViz("vLight","light");
+bindViz("vDensity","density"); bindViz("vEdge","edge"); bindViz("vLight","light");
 bindViz("vQual","quality",v=>parseInt(v,10));
 $("vCmap").addEventListener("change",()=>{ viz.cmap=+$("vCmap").value; saveViz(); });
 $("vJitter").addEventListener("change",()=>{ viz.jitter=$("vJitter").checked; saveViz(); });

@@ -53,6 +53,9 @@ class ChunkManager:
         self.cache = cache if cache is not None else LruChunkCache()
         self.processor = processor          # optional GpuProcessor
         self.max_xy = max_xy                # 0 = no server-side resample
+        # Nissl glass-brain preprocessing (per-block intensity window for the
+        # gray channel; None until computed at startup -> identity/no-normalize).
+        self.norm_lohi: Optional[Tuple[float, float]] = None
         self._records: Dict[str, ChunkRecord] = {}
         self._locks: Dict[str, threading.Lock] = {}
         self._glock = threading.Lock()
@@ -150,7 +153,7 @@ class ChunkManager:
 
     # ---- serialization (BVX2: world bbox + optional GPU resample) -----------
     def serialize(self, cd: ChunkData, channels: Optional[List[int]] = None,
-                  max_xy: Optional[int] = None) -> bytes:
+                  max_xy: Optional[int] = None, glass: bool = False) -> bytes:
         arr = cd.array
         odz, ody, odx, _ = arr.shape                      # ORIGINAL dims -> world bbox
         if channels is not None:
@@ -160,6 +163,15 @@ class ChunkManager:
         cap = self.max_xy if max_xy is None else max_xy
         if cap and self.processor is not None and max(ody, odx) > cap:
             arr = np.ascontiguousarray(self.processor.resample_xy_max(arr, cap), dtype=np.uint8)
+
+        # Nissl see-through DVR: normalize gray + append precomputed gradient so
+        # the client gets [gray, mask, grad] (3 ch). Done after resample so the
+        # gradient is taken at the resolution actually displayed. Needs the gray
+        # and mask channels (the viewer requests channels=[0,3]).
+        if glass and self.processor is not None and arr.shape[-1] >= 2:
+            arr = np.ascontiguousarray(
+                self.processor.glass_pack(arr, gray_idx=0, mask_idx=1,
+                                          lohi=self.norm_lohi), dtype=np.uint8)
 
         dz, dy, dx, nc = arr.shape
         oz, oy, ox, _ = cd.origin_vox
