@@ -18,6 +18,11 @@ Shader "Brain/FusedRaymarch"
         _Steps ("Steps", Float) = 160
         _Flip ("Flip axes (x,y,z = 1 to mirror)", Vector) = (0, 0, 0, 0)
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull", Float) = 1  // 1 = Front
+        [NoScaleOffset] _LabelTex ("Label ids (R8)", 3D) = "black" {}
+        [NoScaleOffset] _Lut ("Region LUT (256x1)", 2D) = "black" {}
+        _LabelMask ("Mask to labels (id>0)", Int) = 0
+        _LabelColor ("Tint by region colour", Int) = 0
+        _LabelAlpha ("Region tint strength", Range(0, 1)) = 0.6
     }
     SubShader
     {
@@ -36,7 +41,10 @@ Shader "Brain/FusedRaymarch"
             #include "UnityCG.cginc"
 
             sampler3D _VolumeTex;
-            float _Low, _High, _EmptyCut, _Density, _Steps;
+            sampler3D _LabelTex;
+            sampler2D _Lut;
+            float _Low, _High, _EmptyCut, _Density, _Steps, _LabelAlpha;
+            int _LabelMask, _LabelColor;
             float4 _Flip;
 
             struct v2f { float4 pos : SV_POSITION; float3 obj : TEXCOORD0; };
@@ -75,6 +83,10 @@ Shader "Brain/FusedRaymarch"
                 {
                     float3 p = camObj + d * (t.x + (s + 0.5) * dt);
                     float3 q = lerp(p, 1.0 - p, _Flip.xyz);
+                    // region label (NEAREST) -- mask out non-tissue (background/fusion slabs)
+                    float lid = tex3Dlod(_LabelTex, float4(q, 0)).r;   // id/255
+                    if (_LabelMask == 1 && lid < 0.002) continue;      // label 0 = not a region
+
                     float3 c = tex3Dlod(_VolumeTex, float4(q, 0)).rgb;
                     float mx = max(max(c.r, c.g), c.b);
                     if (mx < _EmptyCut) continue;          // black = no data -> transparent
@@ -82,7 +94,12 @@ Shader "Brain/FusedRaymarch"
                     if (dens < _Low) continue;             // near-white haze -> skip
                     float v = saturate((dens - _Low) * invRange);
                     float a = saturate(v * _Density);
-                    outC += (1.0 - outA) * a * c;          // true fused colour
+                    if (_LabelColor == 1 && lid >= 0.002)  // tint by region colour
+                    {
+                        float3 lc = tex2Dlod(_Lut, float4((lid * 255.0 + 0.5) / 256.0, 0.5, 0, 0)).rgb;
+                        c = lerp(c, lc, _LabelAlpha);
+                    }
+                    outC += (1.0 - outA) * a * c;          // fused colour (optionally region-tinted)
                     outA += (1.0 - outA) * a;
                     if (outA > 0.985) break;
                 }
