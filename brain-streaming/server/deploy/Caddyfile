@@ -1,0 +1,22 @@
+# HTTP/2 (+ HTTP/3) reverse proxy for the DGX brain-streaming server.
+#
+# Browsers negotiate HTTP/2 ONLY over TLS, so we terminate TLS here and proxy
+# plaintext to uvicorn on :8010. This lifts the HTTP/1.1 "6 connections per
+# origin" cap: the client's many concurrent brick GETs become multiplexed
+# streams on one connection (so volume.html's MAX_CONCURRENCY can be raised).
+#
+#   caddy run --config server/deploy/Caddyfile
+#
+# Then open  https://<dgx-host>:8443/  (accept the local-CA cert once).
+# `tls internal` uses Caddy's own CA — perfect for LAN/DGX. For a real domain,
+# replace the site label with that domain and drop `tls internal`: Caddy fetches
+# a publicly-trusted cert automatically.
+
+:8443 {
+    tls internal
+    encode zstd gzip          # text/JSON only; Caddy skips already-binary bricks
+
+    reverse_proxy 127.0.0.1:8010 {
+        flush_interval -1     # stream binary brick payloads without buffering
+    }
+}

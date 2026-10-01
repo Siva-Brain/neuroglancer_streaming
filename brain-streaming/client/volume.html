@@ -101,6 +101,7 @@
     <button id="btnFit">Fit view</button>
   </div>
   <div id="moderow" class="tools" style="display:none;flex-wrap:wrap;align-items:center;gap:8px"></div>
+  <div id="levelrow" class="tools" style="display:none;flex-wrap:wrap;align-items:center;gap:6px"></div>
   <div id="blocks"></div>
 </div>
 
@@ -142,10 +143,14 @@
 <script>
 const {mat4, mat3, vec3} = glMatrix;
 const API = location.origin;
-const MAX_CONCURRENCY = 6;               // global across all blocks
+// global cap on in-flight brick fetches. 6 = the HTTP/1.1 per-origin limit;
+// behind the HTTP/2 proxy (server/deploy/) raise it with ?conc=24 — one
+// multiplexed connection carries many streams, so the 6-cap no longer applies.
+const MAX_CONCURRENCY = (+new URLSearchParams(location.search).get("conc")) || 6;
 const CHANNELS = "0,3";                  // grayscale + tissue mask (server adds gradient -> RGB8)
 const GLASS = 1;                         // Nissl see-through preprocessing (server-side normalize + gradient)
 const LS_KEY = "brain-block-transforms-v1";
+const LOD_KEY = "brain-lod-pref-v1";     // remembers level clamp + whole-brain choice
 
 // distinct-ish tints so overlapping blocks stay tellable apart
 const PALETTE = [
@@ -221,16 +226,20 @@ void main(){
     vec3 p=uCamLocal+d*(t.x+(float(i)+j)*dt);
     float v0=raw(p); if(v0<uThresh) continue;
     float v=tf(v0); if(v<=0.0) continue;
-    float ge = uHasGrad==1 ? texture(uVol,p).b : 0.0;     // precomputed |grad| (seam-free)
+    // structure term: server-precomputed |grad| (.b) when present, else a live
+    // central-diff magnitude (in-shader gradient, lean/--no-glass path). The live
+    // taps are only taken when edge emphasis is on, to stay off the hot path.
+    float ge = uHasGrad==1 ? texture(uVol,p).b
+                           : (uEdge>0.0 ? clamp(length(grad(p))*8.0,0.0,1.0) : 0.0);
     float a=clamp(v*uAlpha*dt*40.0,0.0,1.0);
-    if(uHasGrad==1) a*=1.0+uEdge*3.0*ge;                  // gradient-opacity: emphasise structure
+    if(ge>0.0) a*=1.0+uEdge*3.0*ge;                       // gradient-opacity: emphasise structure
     a=clamp(a,0.0,1.0);
     vec3 col;
     if(uRGB==1)            col=texture(uVol,p).rgb;                            // true fused colour
     else if(uColorMode==1) col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
     else if(uColorMode==2) col=cmap(v);                                        // colormap
     else                   col=vec3(0.06+0.94*v);                              // grayscale
-    if(uHasGrad==1 && uEdge>0.0)                          // structural shading from stored |grad|
+    if(uEdge>0.0 && ge>0.0)                               // structural shading (precomputed or live |grad|)
       col*=mix(1.0, 0.55+1.4*ge, uEdge);
     if(uLabelOn==1){                                      // region segmentation overlay
       int id=int(texture(uLabelVol,p).r*255.0+0.5);
@@ -298,19 +307,26 @@ const vbo=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,vbo); gl.bufferData(g
 gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0,3,gl.FLOAT,false,0,0);
 
 // ---------- app state ----------
+const UPLOAD_BUDGET = 3;                 // GL uploads per frame (time-sliced, kills hitch)
+const MAX_BRICKS_PER_BLOCK = 512;        // hard cap -> LRU evict (bounds VRAM growth)
 const S = {
   blocks:new Map(),                     // id -> Block
   order:[],
-  inflight:new Set(),                   // "id|zi@level" global
+  inflight:new Set(),                   // "id|z.y.x@level" global
+  aborts:new Map(),                     // gk -> AbortController (cancel superseded fetches)
+  uploadQ:[],                           // decoded bricks awaiting time-sliced GL upload
   requested:0, received:0, bytes:0,
   bytesWin:0, winT:performance.now(), mbps:0,
+  levelMin:null, levelMax:null,         // UI LOD clamp (null=auto; min==max=only that level)
+  whole:false,                          // load every shard of the level (whole brain resident)
   useNg:false,                          // anatomical (Neuroglancer) placement on/off
   pivot:"center",                       // "origin" | "center" (grid-center = coherent row)
   haveNg:false,                         // any block has a server matrix
 };
 // Block = { id, info, extentMm:[z,y,x], levelVox:{}, nBricks, tint:[r,g,b],
-//           visible:bool, transform:{t,r,s},
-//           bricks:Map(zi->{level,tex,bmin,bmax,center}), have:Set, queue:[],
+//           visible:bool, transform:{t,r,s}, activeLevel, gen, normWin:[lo,hi],
+//           bricks:Map("z.y.x"->{level,tex,bmin,bmax,dx,dy,dz,center,lastUsed}),
+//           have:Set("z.y.x@level"), queue:[{ck,coords,level,prio}],
 //           matrix:mat4, matrixInv:mat4 }
 
 function fmt(n){return n<1024?n+" B":n<1048576?(n/1024).toFixed(1)+" KB":(n/1048576).toFixed(2)+" MB";}
@@ -411,14 +427,20 @@ const dummyLut=(function(){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTUR
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([0,0,0,0])); return t; })();
 
 // ---------- cache / global pump ----------
-function enqueue(blk,zi,level,prio){
-  const k=`${zi}@${level}`, gk=`${blk.id}|${k}`;
+// Bricks are keyed by their full shard cell "z.y.x" (not z alone), so finer
+// levels that split x/y into several shards tile correctly. One LOD is shown per
+// block at a time (blk.activeLevel); crossing an LOD boundary clears the block's
+// bricks (clearBlockBricks) so levels never double-composite. A generation
+// counter (blk.gen) discards uploads/fetches that a clear has superseded.
+function brickKey(coords){ return coords[0]+"."+coords[1]+"."+coords[2]; }
+function enqueue(blk,coords,level,prio){
+  const ck=brickKey(coords), k=`${ck}@${level}`, gk=`${blk.id}|${k}`;
   if(blk.have.has(k)||S.inflight.has(gk)) return;
-  const cur=blk.bricks.get(zi);
-  if(cur && cur.level<=level) return;                  // already same/finer
-  const ex=blk.queue.find(q=>q.zi===zi);
-  if(ex){ if(level<ex.level){ex.level=level;} ex.prio=Math.min(ex.prio,prio); return; }
-  blk.queue.push({zi,level,prio});
+  const cur=blk.bricks.get(ck);
+  if(cur && cur.level<=level) return;                  // already same/finer at this cell
+  const ex=blk.queue.find(q=>q.ck===ck);
+  if(ex){ if(level<ex.level){ex.level=level; ex.coords=coords;} ex.prio=Math.min(ex.prio,prio); return; }
+  blk.queue.push({ck,coords,level,prio});
 }
 function pump(){
   // gather queued candidates across all visible blocks, dispatch by priority
@@ -432,39 +454,70 @@ function pump(){
     }
     if(!best) break;
     best.blk.queue.shift();
-    const {zi,level}=best.item, k=`${zi}@${level}`, gk=`${best.blk.id}|${k}`;
+    const {ck,coords,level}=best.item, k=`${ck}@${level}`, gk=`${best.blk.id}|${k}`;
     if(best.blk.have.has(k)||S.inflight.has(gk)) continue;
-    fetchBrick(best.blk,zi,level,k,gk);
+    fetchBrick(best.blk,ck,coords,level,k,gk);
   }
 }
-async function fetchBrick(blk,zi,level,k,gk){
+async function fetchBrick(blk,ck,coords,level,k,gk){
   S.inflight.add(gk); S.requested++;
-  const cid=`L${level}.${zi}.0.0.0`;
+  const gen=blk.gen||0;
+  const cid=`L${level}.${coords[0]}.${coords[1]}.${coords[2]}.0`;
+  const ctrl=new AbortController(); S.aborts.set(gk,ctrl);
   try{
     const iurl=`${API}/api/chunk/${cid}?channels=${S.channels||CHANNELS}&glass=${S.glassFlag??GLASS}&block=${blk.id}`;
-    const reqs=[fetch(iurl).then(r=>r.arrayBuffer())];
-    if(S.hasLabels) reqs.push(fetch(`${API}/api/label_chunk/${cid}?block=${blk.id}`)
+    const reqs=[fetch(iurl,{signal:ctrl.signal}).then(r=>r.arrayBuffer())];
+    if(S.hasLabels) reqs.push(fetch(`${API}/api/label_chunk/${cid}?block=${blk.id}`,{signal:ctrl.signal})
                                 .then(r=>r.arrayBuffer()).catch(()=>null));
     const [buf,lbuf]=await Promise.all(reqs);
     S.received++; S.bytes+=buf.byteLength+(lbuf?lbuf.byteLength:0);
     S.bytesWin+=buf.byteLength+(lbuf?lbuf.byteLength:0); blk.have.add(k);
-    const b=parseBrick(buf);
-    if(!S.rgb && b.nch>=3) S.hasGrad=true;              // glass gradient channel (NOT rgb's blue)
-    const cur=blk.bricks.get(zi);
-    if(cur && cur.level<=b.level){ /* finer already present */ }
-    else{
+    // defer the GL upload to the draw loop (time-sliced) so a burst of arrivals
+    // never stalls a frame; just stash the decoded bytes here.
+    S.uploadQ.push({blk,ck,gen,buf,lbuf});
+  }catch(e){ if(e.name!=="AbortError") console.warn("brick",blk.id,k,e.message); }
+  finally{ S.inflight.delete(gk); S.aborts.delete(gk); pump(); }
+}
+// Time-sliced GL upload: at most `maxN` texImage3D per frame (Item 3).
+function processUploads(maxN){
+  let n=0;
+  while(S.uploadQ.length && n<maxN){
+    const u=S.uploadQ.shift(); const blk=u.blk;
+    if(!S.blocks.has(blk.id) || (blk.gen||0)!==u.gen) continue;   // brain switch / LOD cleared
+    const b=parseBrick(u.buf);
+    if(!S.rgb && b.nch>=3) S.hasGrad=true;              // glass gradient channel present
+    const cur=blk.bricks.get(u.ck);
+    if(!(cur && cur.level<=b.level)){
       const bmin=b.bmin, bmax=b.bmax;                  // block-local mm (BVX2)
       if(cur && cur.tex) gl.deleteTexture(cur.tex);
       if(cur && cur.labelTex) gl.deleteTexture(cur.labelTex);
-      blk.bricks.set(zi,{level:b.level,tex:upload3D(b),bmin,bmax,dx:b.dx,dy:b.dy,dz:b.dz,labelTex:null,
-                         center:[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2]});
+      blk.bricks.set(u.ck,{level:b.level,tex:upload3D(b),bmin,bmax,dx:b.dx,dy:b.dy,dz:b.dz,labelTex:null,
+                       center:[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2],
+                       lastUsed:performance.now()});
     }
-    if(lbuf){ const entry=blk.bricks.get(zi);          // attach aligned label texture
-      if(entry){ const lb=parseBrick(lbuf);
+    if(u.lbuf){ const entry=blk.bricks.get(u.ck);       // attach aligned label texture
+      if(entry){ const lb=parseBrick(u.lbuf);
         if(entry.labelTex) gl.deleteTexture(entry.labelTex);
         entry.labelTex=upload3DLabel(lb); } }
-  }catch(e){ console.warn("brick",blk.id,k,e.message); }
-  finally{ S.inflight.delete(gk); pump(); }
+    if(!S.whole && blk.bricks.size>MAX_BRICKS_PER_BLOCK) evictLRU(blk);  // whole brain: keep all
+    n++;
+  }
+}
+// drop the current bricks of one block (LOD change / before refetch), aborting
+// its in-flight fetches and discarding queued uploads so nothing stale lands.
+function clearBlockBricks(blk){
+  blk.gen=(blk.gen||0)+1;
+  for(const b of blk.bricks.values()){ if(b.tex)gl.deleteTexture(b.tex); if(b.labelTex)gl.deleteTexture(b.labelTex); }
+  blk.bricks.clear(); blk.have.clear(); blk.queue.length=0;
+  for(const [gk,ctrl] of S.aborts){ if(gk.startsWith(blk.id+"|")){ try{ctrl.abort();}catch(e){} } }
+  S.uploadQ=S.uploadQ.filter(u=>u.blk!==blk);
+}
+// LRU eviction when a block exceeds the brick cap (bounds VRAM; Item 4).
+function evictLRU(blk){
+  const arr=[...blk.bricks.entries()].sort((a,z)=>(a[1].lastUsed||0)-(z[1].lastUsed||0));
+  const drop=arr.slice(0, blk.bricks.size-MAX_BRICKS_PER_BLOCK);
+  for(const [ck,b] of drop){ if(b.tex)gl.deleteTexture(b.tex); if(b.labelTex)gl.deleteTexture(b.labelTex);
+    blk.bricks.delete(ck); for(const hk of [...blk.have]) if(hk.startsWith(ck+"@")) blk.have.delete(hk); }
 }
 
 // ---------- camera ----------
@@ -522,9 +575,15 @@ async function maybeView(now){
     const lf=vec3.normalize(vec3.create(), vec3.transformMat3(vec3.create(), fwd, m3));
     let res;
     try{ res=await postView(blk,{position:[lp[0],lp[1],lp[2]],forward:[lf[0],lf[1],lf[2]],
-        rotation:[0,0,0,1],fov:60,viewportWidth:canvas.width,viewportHeight:canvas.height}); }
+        rotation:[0,0,0,1],fov:60,viewportWidth:canvas.width,viewportHeight:canvas.height,
+        level_min:S.levelMin, level_max:S.levelMax, whole:S.whole}); }
     catch(e){ continue; }
-    for(const c of res.chunks){ enqueue(blk, c.coords[0], c.level, c.priority); }
+    // screen-space LOD swap: when the server's target level changes, drop the old
+    // level's bricks so the new one composites cleanly (no cross-level overlap).
+    const T=res.target_level;
+    if(blk.activeLevel!==T) clearBlockBricks(blk);   // baseline starts at coarsest
+    blk.activeLevel=T;
+    for(const c of res.chunks){ enqueue(blk, c.coords, c.level, c.priority); }
   }
   pump();
 }
@@ -542,6 +601,7 @@ function resize(){ const w=canvas.clientWidth,h=canvas.clientHeight;
 function draw(now){
   requestAnimationFrame(draw); resize();
   const {camPos:cp}=camWorld(); maybeView(now);
+  processUploads(UPLOAD_BUDGET);               // time-sliced GL uploads (no frame hitch)
 
   gl.viewport(0,0,canvas.width,canvas.height);
   gl.clearColor(0.02,0.03,0.05,1); gl.clear(gl.COLOR_BUFFER_BIT);
@@ -582,6 +642,13 @@ function draw(now){
     gl.uniformMatrix4fv(loc.model,false,model);
     gl.uniform3fv(loc.camL,cl);
     gl.uniform3fv(loc.tint,blk.tint);
+    // lean mode: contrast-stretch each block's RAW gray by its own window so the
+    // blocks still share a brightness range (the seam fix glass used to bake in).
+    if(!S.rgb && !S.serveGlass && blk.normWin){
+      const lo=blk.normWin[0]/255, hi=blk.normWin[1]/255;
+      gl.uniform1f(loc.wl,(lo+hi)*0.5); gl.uniform1f(loc.ww,Math.max(hi-lo,1e-3));
+    } else { gl.uniform1f(loc.wl,viz.wl); gl.uniform1f(loc.ww,viz.ww); }
+    b.lastUsed=now;
     gl.uniform3f(loc.texel,1/Math.max(1,b.dx),1/Math.max(1,b.dy),1/Math.max(1,b.dz));
     gl.uniform1i(loc.labelOn,(S.labelsOn && S.hasLabels && b.labelTex)?1:0);
     gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, b.labelTex||dummyLabelTex);
@@ -634,6 +701,72 @@ function buildModeRow(){
     buildModeRow(); buildPanel(); saveTransforms(); fitView(); requestViewSoon(); });
   lab.append(cb, document.createTextNode(" anatomical (Neuroglancer) — reassemble brain"));
   host.appendChild(lab);
+}
+// range of levels the server will actually serve, across all blocks
+function levelRange(){
+  let fin=99, coa=0;
+  for(const blk of S.blocks.values()){ const b=blk.info;
+    fin=Math.min(fin, (b.min_streamable_level ?? b.finest_level ?? 0));
+    coa=Math.max(coa, (b.coarsest_level ?? 0)); }
+  if(fin>coa){ fin=0; coa=0; }
+  return {fin,coa};
+}
+// Default STREAMING behaviour (first visit / no saved pref): pin the coarsest
+// level (L7 for hb02 / the 580 brains) and load the whole brain — an instant,
+// fully-resident overview. A saved pref (user changed the controls) wins.
+function applyLodPref(){
+  const {fin,coa}=levelRange();
+  let p=null; try{ p=JSON.parse(localStorage.getItem(LOD_KEY)||"null"); }catch(e){}
+  if(p){
+    if(p.auto){ S.levelMin=S.levelMax=null; }
+    else { S.levelMin=Math.max(fin,Math.min(coa,p.min)); S.levelMax=Math.max(fin,Math.min(coa,p.max)); }
+    S.whole=!!p.whole;
+  } else {                                  // streaming default: coarsest + whole brain
+    S.levelMin=S.levelMax=coa; S.whole=true;
+  }
+}
+function saveLodPref(){
+  try{ localStorage.setItem(LOD_KEY, JSON.stringify(
+    {auto:(S.levelMin===null), min:S.levelMin, max:S.levelMax, whole:S.whole})); }catch(e){}
+}
+// "only layer" control: Auto (screen-space) or clamp the LOD to [min,max].
+// Set both equal (e.g. L7–L7) to load ONLY that level's data.
+function buildLevelRow(){
+  const host=$("levelrow"); host.innerHTML="";
+  if(!S.blocks.size){ host.style.display="none"; return; }
+  host.style.display="flex";
+  const {fin,coa}=levelRange();
+  // drop a stale clamp that no longer fits this brain's level range
+  if(S.levelMin!==null && (S.levelMin<fin||S.levelMax>coa)){ S.levelMin=S.levelMax=null; }
+  const auto=document.createElement("label"); auto.className="toggle";
+  const acb=document.createElement("input"); acb.type="checkbox"; acb.checked=(S.levelMin===null);
+  auto.append(acb, document.createTextNode(" auto level"));
+  const mkSel=(val)=>{ const s=document.createElement("select");
+    s.style.cssText="background:#0c1118;color:#cfe;border:1px solid #2a3344;border-radius:4px;padding:1px 3px";
+    for(let l=fin;l<=coa;l++){ const o=document.createElement("option"); o.value=l; o.textContent="L"+l; s.appendChild(o); }
+    s.value=val; return s; };
+  const def=(S.levelMin!==null)?S.levelMin:coa;
+  const selMin=mkSel(def), selMax=mkSel((S.levelMax!==null)?S.levelMax:def);
+  const upd=()=>{
+    selMin.disabled=selMax.disabled=acb.checked;
+    if(acb.checked){ S.levelMin=S.levelMax=null; }
+    else{ let a=+selMin.value,b=+selMax.value; if(a>b){const t=a;a=b;b=t; selMin.value=a; selMax.value=b;}
+      S.levelMin=a; S.levelMax=b; }
+    saveLodPref();
+    for(const blk of S.blocks.values()) clearBlockBricks(blk);   // reload at the new clamp
+    requestViewSoon();
+  };
+  acb.addEventListener("change",upd); selMin.addEventListener("change",upd); selMax.addEventListener("change",upd);
+  selMin.disabled=selMax.disabled=acb.checked;
+  host.append(auto, document.createTextNode(" only "), selMin, document.createTextNode("–"), selMax);
+  // whole-brain override: load EVERY shard of the level, not just the view cone.
+  // Best with a coarse level pinned above; fine + whole = huge, so warn once.
+  const wl=document.createElement("label"); wl.className="toggle"; wl.title="load every shard of the level (whole brain), not just what's in view — use with a coarse level";
+  const wcb=document.createElement("input"); wcb.type="checkbox"; wcb.checked=S.whole;
+  wcb.addEventListener("change",()=>{ S.whole=wcb.checked; saveLodPref();
+    for(const blk of S.blocks.values()) clearBlockBricks(blk); requestViewSoon(); });
+  wl.append(wcb, document.createTextNode(" whole brain"));
+  host.append(document.createTextNode("  "), wl);
 }
 function buildPanel(){
   const host=$("blocks"); host.innerHTML="";
@@ -786,6 +919,8 @@ function clearBlocks(){
   for(const blk of S.blocks.values())
     for(const b of blk.bricks.values()){ if(b.tex) gl.deleteTexture(b.tex); if(b.labelTex) gl.deleteTexture(b.labelTex); }
   if(S.lutTex){ gl.deleteTexture(S.lutTex); S.lutTex=null; }
+  for(const ctrl of S.aborts.values()){ try{ctrl.abort();}catch(e){} }
+  S.aborts.clear(); S.uploadQ.length=0;
   S.blocks.clear(); S.order.length=0; S.inflight.clear();
   S.requested=0; S.received=0; S.bytes=0; S.hasGrad=false;
 }
@@ -801,10 +936,15 @@ async function loadBrain(){
       $("labelRow").style.display="none"; S.hasLabels=false; buildPanel();
       return;
     }
-    // per-brain render mode: RGB fused volume vs Nissl gray+mask glass bricks
+    // per-brain render mode: RGB fused volume vs Nissl gray+mask glass bricks.
+    // serve_glass=false (server --no-glass / lean path): bricks are 2ch raw
+    // gray+mask, so the client does NOT request a gradient channel and computes
+    // structure in-shader (live central-diff), windowing raw gray per block.
     S.rgb = !!info.rgb;
+    const b0 = (info.blocks && info.blocks[0]) || info;
+    S.serveGlass = !!b0.serve_glass;
     S.channels = S.rgb ? "0,1,2" : "0,3";
-    S.glassFlag = S.rgb ? 0 : 1;
+    S.glassFlag = (S.rgb || !S.serveGlass) ? 0 : 1;
     applyVizProfile();                     // RGB vs Nissl viz preset for this brain
     // region label overlay: build the colour LUT for the labelled block
     S.hasLabels = !!info.has_labels;
@@ -831,6 +971,8 @@ async function loadBrain(){
       const blk={
         id:bi.block_id, info:bi,
         extentMm:bi.extent_mm,                          // (z,y,x) mm
+        normWin:bi.norm_window||null,                   // [lo,hi] uint8 raw-gray window (lean mode)
+        activeLevel:bi.coarsest_level, gen:0,           // displayed LOD (baseline = coarsest)
         levelVox:{}, nBricks:0,
         tint:PALETTE[idx%PALETTE.length],
         visible: sv? (sv.visible!==false) : true,
@@ -849,12 +991,14 @@ async function loadBrain(){
       S.blocks.set(blk.id,blk); S.order.push(blk.id);
     });
     $("conn").innerHTML='<span class="dot ok"></span>CONNECTED';
-    buildModeRow(); buildPanel(); fitView();
+    applyLodPref();                        // default = coarsest + whole brain (or saved pref)
+    buildModeRow(); buildLevelRow(); buildPanel(); fitView();
     // coarse whole-brain-per-block first: every z-slab at each block's coarsest level
     let i=0;
     for(const blk of S.blocks.values()){
       blk.info.baseline_chunks.forEach((cid)=>{
-        const p=cid.replace("L","").split("."); enqueue(blk, +p[1], +p[0], 500+(i++));
+        const p=cid.replace("L","").split(".");   // L{level}.{z}.{y}.{x}.{c}
+        enqueue(blk, [ +p[1], +p[2], +p[3] ], +p[0], 500+(i++));
       });
     }
     pump();

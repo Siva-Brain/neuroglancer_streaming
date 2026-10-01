@@ -67,6 +67,8 @@ ZARR_ROOTS = list(DEFAULT_ZARR_ROOTS)
 # would not reassemble). See BLOCK_META / _block_voxel_um below. None -> metadata.
 VOXEL_UM_FINEST = (20.0, 8.0, 8.0)
 MIN_LEVEL = 4
+TARGET_PX = 1.0                  # screen-space LOD: desired on-screen voxel size (px).
+                                 # ~1 = voxel≈pixel (crisp); raise to stream less.
 DELAY_MS = 0.0
 BANDWIDTH_LIMIT_MBPS = 0.0        # 0 = unlimited
 CACHE_BYTES = 2 * 1024 * 1024 * 1024   # A100 box has 2 TB RAM; be generous
@@ -179,8 +181,8 @@ def _ensure_registry_seed() -> None:
 
 
 def _activate_initial() -> None:
-    """Startup activation: load --brain / --zarr target if given; otherwise leave
-    NO brain active (the selector starts empty and the user picks one)."""
+    """Startup activation: load --brain / --zarr target if given; otherwise
+    activate the default streaming brain 'Brain_580_One_block' (hb02)."""
     if FORCE_BOOTSTRAP:
         name = INITIAL_BRAIN or "Brain_580_whole"
         brain = reg.bootstrap_brain(name, ZARR_ROOTS, _HIST_META,
@@ -195,7 +197,14 @@ def _activate_initial() -> None:
         else:
             print(f"[brains] --brain {INITIAL_BRAIN!r} not found; starting with no brain")
     else:
-        print("[brains] no brain active by default; pick one via the selector / /api/brains")
+        # default streaming brain: hb02 fused single block (Brain_580_One_block).
+        dflt = "Brain_580_One_block"
+        if reg.exists(dflt):
+            _set_active_brain(reg.load_brain(dflt), dflt)
+            build_blocks(force=True)
+            print(f"[brains] default brain {dflt!r} activated")
+        else:
+            print("[brains] no brain active by default; pick one via the selector / /api/brains")
 
 app = FastAPI(title="DGX Brain Streaming (Zarr, multi-block)", version="3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -281,7 +290,7 @@ def build_blocks(force: bool = False) -> "Dict[str, BlockCtx]":
         src = reg.make_source(blk)          # HTTP or local DDN, auto-detected
         mgr = ChunkManager(src, LruChunkCache(CACHE_BYTES),
                            workers=WORKERS, processor=_gpu, max_xy=GPU_MAX_XY)
-        sel = CameraViewSelector(src, min_level=MIN_LEVEL)
+        sel = CameraViewSelector(src, min_level=MIN_LEVEL, target_px=TARGET_PX)
         ctx = BlockCtx(bid, blk["source"], src, mgr, sel, label_map=blk.get("label_map"))
         if blk.get("label_map") and blk["label_map"].get("source"):
             # label volume streams through its own manager; max_xy=0 so label ids
@@ -566,6 +575,8 @@ def protocol():
 def _block_info_dict(ctx: BlockCtx) -> dict:
     s = ctx.selector
     info = s.info
+    nl = ctx.manager.norm_lohi
+    rgb = bool((ACTIVE_BRAIN or {}).get("rgb"))
     return {
         "block_id": ctx.block_id,
         "url": ctx.url,
@@ -586,6 +597,11 @@ def _block_info_dict(ctx: BlockCtx) -> dict:
         ],
         "baseline_chunks": s.baseline_chunks(),   # whole coarsest level (load first)
         "has_labels": ctx.label_map is not None,   # per-block segmentation overlay available
+        # in-shader/lean path: raw-gray contrast window (uint8 units) so the client
+        # can window without the server baking it, and whether a precomputed
+        # gradient channel is present (serve_glass -> 3ch; else client does grad()).
+        "norm_window": [float(nl[0]), float(nl[1])] if nl else None,
+        "serve_glass": bool((not rgb) and GLASS),
         "attrs": info.attrs,
     }
 
@@ -611,7 +627,13 @@ def view(v: ViewRequest):
     ctx = get_block(v.block)
     s = ctx.selector
     aspect = (v.viewportWidth / v.viewportHeight) if v.viewportHeight else 1.777
-    sel = s.select(v.position, v.forward, v.fov, aspect)
+    # negative (or null) level bounds mean "unset" -> screen-space, unclamped.
+    # (JSON clients that can't send null, e.g. Unity JsonUtility, send -1.)
+    lm = v.level_min if (v.level_min is not None and v.level_min >= 0) else None
+    lM = v.level_max if (v.level_max is not None and v.level_max >= 0) else None
+    sel = s.select(v.position, v.forward, v.fov, aspect,
+                   viewport_h=(v.viewportHeight or 1080),
+                   level_min=lm, level_max=lM, whole=v.whole)
     # A100 upgrade: warm the top-priority chunks in parallel so the client's
     # subsequent GETs hit a warm cache (hides the ~170 ms Zarr HTTP latency).
     if PREFETCH_TOP > 0 and sel:
@@ -975,8 +997,11 @@ def _compute_norm_windows():
     distributions differ -- that mismatch is a big part of the inter-block seams
     in the reassembled brain. We sample each block's coarsest level once, take a
     robust (p2,p98) window of channel 0, and hand it to the manager; serialize()
-    then maps that window to 0..255 so every block shares one brightness range."""
-    if not GLASS or (ACTIVE_BRAIN or {}).get("rgb"):
+    then maps that window to 0..255 so every block shares one brightness range.
+    Computed for every non-RGB brain, glass on or off: in the lean/in-shader path
+    (--no-glass) the client needs this window to contrast-stretch the raw gray
+    (served via dataset_info `norm_window`); with glass on, glass_pack bakes it."""
+    if (ACTIVE_BRAIN or {}).get("rgb"):
         return                               # RGB brains don't use the gray glass window
     build_blocks()
     for bid, ctx in list(_blocks.items()):   # snapshot: a hot-swap may rebuild _blocks
@@ -1024,7 +1049,11 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8010)
     ap.add_argument("--min-level", type=int, default=4,
                     help="finest level the DGX will stream (0=full res, huge). "
-                         "Keep >= --resident-level so served bricks come from VRAM.")
+                         "Keep >= --resident-level so served bricks come from VRAM. "
+                         "Lower (1/0) over an ROI to inspect Nissl grain.")
+    ap.add_argument("--target-px", type=float, default=1.0,
+                    help="screen-space LOD: desired on-screen voxel size in pixels "
+                         "(~1=voxel≈pixel; raise to stream less).")
     ap.add_argument("--delay-ms", type=float, default=0.0)
     ap.add_argument("--bandwidth-limit", type=float, default=0.0,
                     help="MB/s cap for chunk payloads (0=unlimited)")
@@ -1044,8 +1073,8 @@ if __name__ == "__main__":
     ap.add_argument("--no-glass", dest="glass", action="store_false")
     ap.add_argument("--brain", default="",
                     help="initial active brain to load at startup (registry name); "
-                         "default empty = load NO brain (pick one in the viewer / via "
-                         "?brain=<name> in the URL). --zarr implies bootstrapping one.")
+                         "empty = the default streaming brain 'Brain_580_One_block' "
+                         "(hb02). --zarr instead bootstraps the 5-block Stroke_1 brain.")
     ap.add_argument("--prefetch-top", type=int, default=8,
                     help="warm N top-priority chunks on each /view (0=off)")
     ap.add_argument("--voxel-um", default="20,0.5,0.5",
@@ -1074,6 +1103,7 @@ if __name__ == "__main__":
     _self.INITIAL_BRAIN = args.brain
     _self.FORCE_BOOTSTRAP = bool(args.zarr)     # explicit --zarr -> rebuild brain from roots
     _self.MIN_LEVEL = args.min_level
+    _self.TARGET_PX = args.target_px
     _self.DELAY_MS = args.delay_ms
     _self.BANDWIDTH_LIMIT_MBPS = args.bandwidth_limit
     _self.CACHE_BYTES = args.cache_mb * 1024 * 1024

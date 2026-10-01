@@ -6,9 +6,10 @@ Shader "Brain/Raymarch"
     // reference client: tissue = 1 - R, density = G * tissue.
     Properties
     {
-        _VolumeTex ("Volume (RG)", 3D) = "" {}
+        _VolumeTex ("Volume (RG or RGB)", 3D) = "" {}
         _Density ("Density", Float) = 8
         _Steps ("Steps", Float) = 48
+        _RGB ("RGB fused (1) vs Nissl RG (0)", Float) = 0
         // If the brain is invisible or looks inside-out, flip this in the material
         // (Front renders the box's far faces -> valid inside & outside).
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull", Float) = 1  // 1 = Front
@@ -32,6 +33,7 @@ Shader "Brain/Raymarch"
             sampler3D _VolumeTex;
             float _Density;
             float _Steps;
+            float _RGB;
 
             struct v2f { float4 pos : SV_POSITION; float3 obj : TEXCOORD0; };
 
@@ -68,13 +70,28 @@ Shader "Brain/Raymarch"
                 [loop] for (int s = 0; s < N; s++)
                 {
                     float3 p = camObj + d * (t.x + (s + 0.5) * dt);
-                    float2 v = tex3Dlod(_VolumeTex, float4(p, 0)).rg;
-                    float tissue = 1.0 - v.r;
-                    float dens = v.g * tissue;
+                    float4 tex = tex3Dlod(_VolumeTex, float4(p, 0));
+                    float dens; float3 col;
+                    if (_RGB > 0.5)
+                    {
+                        // RGB fused (hb02): white background, darker = tissue. Matches
+                        // the browser client: density = 1 - max(rgb); colour = rgb.
+                        float3 rgb = tex.rgb;
+                        float mx = max(max(rgb.r, rgb.g), rgb.b);
+                        if (mx < 0.04) continue;          // empty / no-data (black) -> skip
+                        dens = 1.0 - mx;
+                        col = rgb;
+                    }
+                    else
+                    {
+                        // Nissl gray+mask: tissue = 1 - gray, density = mask * tissue.
+                        float tissue = 1.0 - tex.r;
+                        dens = tex.g * tissue;
+                        col = lerp(float3(0.55, 0.62, 0.78), float3(0.98, 0.98, 0.98), tissue);
+                    }
                     if (dens > 0.02)
                     {
                         float a = saturate(dens * _Density * dt);
-                        float3 col = lerp(float3(0.55, 0.62, 0.78), float3(0.98, 0.98, 0.98), tissue);
                         outC += (1.0 - outA) * a * col;
                         outA += (1.0 - outA) * a;
                         if (outA > 0.985) break;

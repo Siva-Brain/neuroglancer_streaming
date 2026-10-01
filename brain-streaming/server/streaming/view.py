@@ -24,6 +24,14 @@ class ViewRequest(BaseModel):
     viewportWidth: int = 1920
     viewportHeight: int = 1080
     block: Optional[str] = None
+    # Optional UI level clamp: restrict the selected LOD to [level_min, level_max]
+    # (null = unclamped / screen-space). Set both equal to load ONLY that level,
+    # e.g. level_min=level_max=7 -> only L7.
+    level_min: Optional[int] = None
+    level_max: Optional[int] = None
+    # whole=True loads EVERY shard of the selected level (whole brain resident),
+    # not just the frustum-visible budget. Intended for coarse overview levels.
+    whole: bool = False
 
 
 class SelectedChunkDto(BaseModel):

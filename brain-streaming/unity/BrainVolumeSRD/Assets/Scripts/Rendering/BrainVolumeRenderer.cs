@@ -16,6 +16,7 @@ namespace BrainVolume
         public Material raymarchMaterial;       // Brain/Raymarch shader
         [Range(8, 256)] public int steps = 64;
         [Range(1f, 30f)] public float density = 8f;
+        public bool isRGB = false;              // RGB fused volume (hb02) vs Nissl gray+mask
 
         IReadOnlyList<BrainBlock> _blocks;
         Mesh _cube;
@@ -55,6 +56,7 @@ namespace BrainVolume
 
             raymarchMaterial.SetFloat("_Steps", steps);
             raymarchMaterial.SetFloat("_Density", density);
+            raymarchMaterial.SetFloat("_RGB", isRGB ? 1f : 0f);
             foreach (var b in _sorted)
             {
                 if (b.Texture == null) continue;

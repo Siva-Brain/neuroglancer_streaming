@@ -23,9 +23,10 @@ namespace BrainVolume
         public LevelDto[] levels; public string[] baseline_chunks;
         public DefaultTransformDto default_transform;
     }
-    // /api/dataset/info -> { blocks:[...], <first-block mirror> }. We read `blocks`.
+    // /api/dataset/info -> { blocks:[...], rgb, has_labels, <first-block mirror> }.
     [Serializable] public class DatasetInfo {
         public BlockInfo[] blocks;
+        public bool rgb;                                 // true = RGB fused volume (hb02)
         public string name; public float[] extent_mm;   // legacy top-level mirror (unused)
     }
     // /api/transforms -> { space, transforms:{id:{...}}, list:[{block,matrix,...}] }.
@@ -46,6 +47,9 @@ namespace BrainVolume
         public float[] position; public float[] rotation; public float[] forward;
         public float fov; public int viewportWidth; public int viewportHeight;
         public string block;                 // which block this camera query is for
+        public int level_min;                // LOD clamp (-1 = auto/screen-space)
+        public int level_max;                // min==max loads ONLY that level
+        public bool whole;                   // load every shard of the level (whole brain)
     }
     [Serializable] class ChunkIdsDto { public string[] chunk_ids; }
 
@@ -59,6 +63,9 @@ namespace BrainVolume
     {
         public string BaseUrl { get; }
         public string Channels = "0,3";        // grayscale + tissue mask (matches browser)
+        public int LevelMin = -1;              // LOD clamp sent on every /view (-1 = auto)
+        public int LevelMax = -1;              // min==max -> load ONLY that level
+        public bool Whole = false;             // load every shard of the level (whole brain)
         public bool Connected { get; private set; }
         public float LastLatencyMs { get; private set; }
 
@@ -92,6 +99,7 @@ namespace BrainVolume
                 forward  = new[] { cam.ForwardMm.x, cam.ForwardMm.y, cam.ForwardMm.z },
                 fov = cam.Fov, viewportWidth = cam.ViewportW, viewportHeight = cam.ViewportH,
                 block = block,
+                level_min = LevelMin, level_max = LevelMax, whole = Whole,
             };
             var body = JsonUtility.ToJson(dto);
             var txt = await PostTextAsync($"{BaseUrl}/api/view", body);

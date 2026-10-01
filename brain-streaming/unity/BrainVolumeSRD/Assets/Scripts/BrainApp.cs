@@ -14,8 +14,17 @@ namespace BrainVolume
     public sealed class BrainApp : MonoBehaviour
     {
         [Header("DGX server")]
-        public string serverUrl = "http://192.168.1.50:8090";
-        public string channels = "0,3";                 // grayscale + tissue mask
+        public string serverUrl = "http://dgx3.humanbrain.in:8010";
+        public string channels = "0,3";                 // Nissl gray+mask; auto -> "0,1,2" for RGB brains
+
+        [Header("LOD / streaming default")]
+        [Tooltip("Pin to the coarsest level (e.g. L7) — instant whole-brain overview. Uncheck for screen-space LOD.")]
+        public bool pinCoarsest = true;
+        [Tooltip("Load every shard of the level (whole brain resident), not just the view frustum.")]
+        public bool wholeBrain = true;
+        [Tooltip("Manual LOD clamp when pinCoarsest is off: -1 = auto/screen-space.")]
+        public int lodMin = -1;
+        public int lodMax = -1;
 
         [Header("Scene refs")]
         public Camera targetCamera;
@@ -72,6 +81,19 @@ namespace BrainVolume
                     "If HTTP is blocked: Player Settings > Other Settings > 'Allow downloads over HTTP' = Always.");
                 return;
             }
+
+            // RGB brains (hb02 fused) need the colour channels + the RGB shader path.
+            bool rgb = Info.rgb;
+            Client.Channels = rgb ? "0,1,2" : channels;
+            if (volumeRenderer != null) volumeRenderer.isRGB = rgb;
+
+            // streaming LOD default: pin the coarsest level (L7) + whole brain for an
+            // instant, fully-resident overview; else a manual clamp or screen-space.
+            int coarsest = 0;
+            foreach (var bi in blockInfos) if (bi.coarsest_level > coarsest) coarsest = bi.coarsest_level;
+            if (pinCoarsest) { Client.LevelMin = Client.LevelMax = coarsest; }
+            else { Client.LevelMin = lodMin; Client.LevelMax = lodMax; }
+            Client.Whole = wholeBrain;
 
             // per-block placement matrices (omeToRas) from /api/transforms
             var xf = await Client.GetTransformsAsync();
