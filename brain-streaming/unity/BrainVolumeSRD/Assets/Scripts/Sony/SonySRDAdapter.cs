@@ -1,4 +1,5 @@
 using UnityEngine;
+using SRD.Core;
 
 namespace BrainVolume
 {
@@ -42,8 +43,8 @@ namespace BrainVolume
     // just verifies the display is present and running. Do NOT hand-roll stereo.
     public sealed class SonySRDAdapter : ISonySRDAdapter
     {
-        readonly SRD.Core.SRDManager _mgr;
-        public SonySRDAdapter(SRD.Core.SRDManager mgr) { _mgr = mgr; }
+        readonly SRDManager _mgr;
+        public SonySRDAdapter(SRDManager mgr) { _mgr = mgr; }
 
         // SRDManager has no IsRunning. It deactivates its own GameObject in Awake when
         // no SRD session/runtime is available, and creates Presence once a session exists.

@@ -165,50 +165,6 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &682091381
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 682091382}
-  - component: {fileID: 682091383}
-  m_Layer: 0
-  m_Name: GameObject
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &682091382
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 682091381}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0.62698, y: 0, z: -0.37424}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &682091383
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 682091381}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: da48c6911f1050f4ea42e75cecca4883, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.SRD.BC7Probe
 --- !u!1 &705507993
 GameObject:
   m_ObjectHideFlags: 0
@@ -998,13 +954,117 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1836338543}
   serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 1, z: 0, w: -0.00000004371139}
+  m_LocalRotation: {x: 0.70710677, y: 0, z: -0.70710677, w: 0}
   m_LocalPosition: {x: -0, y: 0.5, z: -0.4}
   m_LocalScale: {x: 1.4, y: 1.4, z: 1.4}
   m_ConstrainProportionsScale: 1
   m_Children: []
   m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 270, z: 180}
+--- !u!1 &2100000001
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 2100000002}
+  - component: {fileID: 2100000003}
+  m_Layer: 0
+  m_Name: NeuronalLossSequence
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &2100000002
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2100000001}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &2100000003
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2100000001}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9e7755c6284963843a1005cde6f29657, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.NeuronalLossSequence
+  folder: NeuronalLoss
+  volumeFile: NeuronalLoss_48x48x117_RG.bytes
+  width: 48
+  height: 48
+  depth: 117
+  roiX0: 133
+  roiX1: 181
+  roiY0: 81
+  roiY1: 129
+  roiLevelWidth: 354
+  roiLevelHeight: 194
+  useRoiCentre: 0
+  pointOnCut: {x: 0.82, y: 0.28}
+  leftIsLowZ: 1
+  playOnStart: 1
+  initialEuler: {x: 0, y: 270, z: 180}
+  extraTurns: 0
+  showNeuronalLoss: 1
+  clippingDepth: 0.3
+  showBrain: 2.5
+  rotate: 4
+  slice: 4
+  grow: 4
+  startScale: 0.02
+  arcTowardViewer: 0.3
+  overshoot: 0.08
+  showArrow: 0
+  labelDelay: 0.2
+  labelSeconds: 0.6
+  blockLength: 0.3
+  sideDistance: 0.2
+  comeOut: 0.3
+  pivotYawDegrees: 45
+  blockEuler: {x: 0, y: 90, z: 12}
+  spinDegreesPerSecond: 0
+  stepCount: 96
+  tissueColor: {r: 0.42, g: 0.42, b: 0.45, a: 1}
+  tissueThreshold: 0.04
+  tissueDensity: 0.45
+  tissueShade: 0.8
+  lossColorLow: {r: 0.48, g: 0.3, b: 0.62, a: 1}
+  lossColorHigh: {r: 0.96, g: 0.52, b: 0.52, a: 1}
+  lossThreshold: 0.62
+  lossSoftness: 0.25
+  lossDensity: 2.4
+  lineColor: {r: 0.92, g: 0.94, b: 0.97, a: 1}
+  lineWidth: 0.0032
+  headLength: 0.035
+  headWidth: 0.026
+  tipGap: 0.008
+  anchorDotDiameter: 0.016
+  title: Neuronal loss
+  tagLine: "Stroke tissue  \xB7  3D histology stack"
+  cardColor: {r: 1, g: 1, b: 1, a: 1}
+  titleColor: {r: 0.04, g: 0.04, b: 0.06, a: 1}
+  tagColor: {r: 0.1, g: 0.1, b: 0.12, a: 1}
+  titleFontSize: 30
+  tagFontSize: 19
+  padding: 18
+  labelGap: 0.03
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -1019,4 +1079,4 @@ SceneRoots:
   - {fileID: 1733100002}
   - {fileID: 1744200002}
   - {fileID: 1836338546}
-  - {fileID: 682091382}
+  - {fileID: 2100000002}
