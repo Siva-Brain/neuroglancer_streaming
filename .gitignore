@@ -38,6 +38,11 @@ Thumbs.db
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/T1/*.raw
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/T1/*.raw.meta
 
+# Exported fused-volume levels (hb02_L7/L5/L4 .raw) -- regenerate with
+# server/tools/zarr_level_to_raw.py or copy manually to the SRD machine.
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Fused/*.raw
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Fused/*.raw.meta
+
 # Unity crash-recovery scene copies
 **/Assets/_Recovery/
 **/Assets/_Recovery.meta

@@ -150,7 +150,8 @@ const MAX_CONCURRENCY = (+new URLSearchParams(location.search).get("conc")) || 6
 const CHANNELS = "0,3";                  // grayscale + tissue mask (server adds gradient -> RGB8)
 const GLASS = 1;                         // Nissl see-through preprocessing (server-side normalize + gradient)
 const LS_KEY = "brain-block-transforms-v1";
-const LOD_KEY = "brain-lod-pref-v1";     // remembers level clamp + whole-brain choice
+const LOD_KEY = "brain-lod-pref-v2";     // remembers level clamp + whole-brain choice
+                                         // (v2: drop pre-default prefs so L7+whole applies)
 
 // distinct-ish tints so overlapping blocks stay tellable apart
 const PALETTE = [
