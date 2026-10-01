@@ -81,7 +81,18 @@ namespace BrainVolume
         [Tooltip("+1 = slicing in (cutting away), -1 = slicing back (restoring). Flipped by each C press.")]
         public int sliceDirection = -1;
 
+        [Header("Labels (region segmentation, optional)")]
+        [Tooltip("Base name of the aligned label export, e.g. hb02_L7_labels. Empty = no labels.")]
+        public string labelName = "";
+        [Tooltip("Render only where label > 0. Removes background/empty/fusion slabs, keeps tissue.")]
+        public bool maskToLabels = true;
+        [Tooltip("Tint tissue by region colour (from the LUT). Off = keep natural fused colour.")]
+        public bool colorRegions = false;
+        [Range(0f, 1f)] public float labelOpacity = 0.6f;
+
         public Texture3D Texture { get; private set; }
+        public Texture3D LabelTex { get; private set; }
+        public Texture2D LutTex { get; private set; }
         public Vector3 SizeMm { get; private set; }     // (x, y, z) mm
         public bool Loaded => Texture != null;
 
@@ -128,13 +139,30 @@ namespace BrainVolume
                 return;
             }
             int w = meta.width, h = meta.height, d = meta.depth;
-            byte[] raw = File.ReadAllBytes(rawPath);
-            long expect = (long)w * h * d * 3;
-            if (raw.LongLength != expect)
+            const int MAXDIM = 2048;        // Unity Texture3D per-dimension limit
+            if (w > MAXDIM || h > MAXDIM || d > MAXDIM)
             {
-                Debug.LogError($"[Fused] Raw size {raw.LongLength} != {w}x{h}x{d}x3 = {expect}.");
+                Debug.LogError($"[Fused] L{meta.level} {w}x{h}x{d} exceeds Texture3D max " +
+                               $"{MAXDIM}/dim. L4 is the finest single-volume level; finer " +
+                               "needs tiling (use the streaming client).");
                 return;
             }
+            long expectBytes = (long)w * h * d * 3;
+            var fi = new FileInfo(rawPath);
+            if (fi.Length != expectBytes)
+            {
+                Debug.LogError($"[Fused] {baseName}.raw is {fi.Length} bytes, expected " +
+                               $"{expectBytes} ({w}x{h}x{d}x3). Likely a truncated/incomplete " +
+                               "copy -- re-copy the full file (compare sizes after transfer).");
+                return;
+            }
+            if (expectBytes > int.MaxValue)
+            {
+                Debug.LogError($"[Fused] {expectBytes} bytes > 2 GB; File.ReadAllBytes can't " +
+                               "load it. Use L4 or coarser.");
+                return;
+            }
+            byte[] raw = File.ReadAllBytes(rawPath);
 
             if (meta.sizeMM != null && meta.sizeMM.Length == 3)
                 SizeMm = new Vector3(meta.sizeMM[0], meta.sizeMM[1], meta.sizeMM[2]);
@@ -180,6 +208,63 @@ namespace BrainVolume
             Debug.Log($"[Fused] Loaded L{meta.level} {w}x{h}x{d} RGB, " +
                       $"{SizeMm.x:F0}x{SizeMm.y:F0}x{SizeMm.z:F0} mm -> " +
                       $"{size.x:F3}x{size.y:F3}x{size.z:F3} units.");
+
+            if (!string.IsNullOrEmpty(labelName))
+                LoadLabels(dir, w, h, d);
+        }
+
+        // Aligned label volume (R8, NEAREST) + 256-colour region LUT. Same dims as fused.
+        void LoadLabels(string dir, int fw, int fh, int fd)
+        {
+            string ljson = Path.Combine(dir, labelName + ".json");
+            string lraw = Path.Combine(dir, labelName + ".raw");
+            if (!File.Exists(ljson) || !File.Exists(lraw))
+            {
+                Debug.LogWarning("[Fused] Label files missing: " + lraw + " (labels disabled).");
+                return;
+            }
+            var lm = JsonUtility.FromJson<Meta>(File.ReadAllText(ljson));
+            if (lm.width != fw || lm.height != fh || lm.depth != fd)
+            {
+                Debug.LogError($"[Fused] Label dims {lm.width}x{lm.height}x{lm.depth} != fused " +
+                               $"{fw}x{fh}x{fd}. Export labels at the SAME level.");
+                return;
+            }
+            byte[] lraw8 = File.ReadAllBytes(lraw);
+            if (lraw8.LongLength != (long)fw * fh * fd)
+            {
+                Debug.LogError($"[Fused] Label raw size {lraw8.LongLength} != {fw}x{fh}x{fd} " +
+                               "(truncated copy?).");
+                return;
+            }
+            LabelTex = new Texture3D(fw, fh, fd, TextureFormat.R8, false)
+            {
+                name = "FusedLabels",
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Point,     // NEAREST: region ids must not interpolate
+                anisoLevel = 0,
+            };
+            LabelTex.SetPixelData(lraw8, 0);
+            LabelTex.Apply(false, true);
+
+            // 256x1 RGB LUT from <labelName>.lut (768 bytes). id 0 = black.
+            string lut = Path.Combine(dir, labelName + ".lut");
+            if (File.Exists(lut))
+            {
+                byte[] lb = File.ReadAllBytes(lut);
+                if (lb.Length >= 256 * 3)
+                {
+                    LutTex = new Texture2D(256, 1, TextureFormat.RGB24, false)
+                    {
+                        name = "FusedLut",
+                        wrapMode = TextureWrapMode.Clamp,
+                        filterMode = FilterMode.Point,
+                    };
+                    LutTex.SetPixelData(lb, 0);
+                    LutTex.Apply(false, true);
+                }
+            }
+            Debug.Log($"[Fused] Labels loaded ({labelName}), LUT={(LutTex != null)}.");
         }
 
         void Update()
@@ -233,6 +318,14 @@ namespace BrainVolume
             if (sliceReverse) cmax[a] = 1f - cut; else cmin[a] = cut;
             material.SetVector("_ClipMin", cmin);
             material.SetVector("_ClipMax", cmax);
+
+            bool hasLabels = LabelTex != null;
+            material.SetTexture("_LabelTex", hasLabels ? LabelTex : Texture);
+            material.SetTexture("_Lut", LutTex != null ? (Texture)LutTex : Texture2D.blackTexture);
+            material.SetInt("_LabelMask", (hasLabels && maskToLabels) ? 1 : 0);
+            material.SetInt("_LabelColor", (hasLabels && colorRegions && LutTex != null) ? 1 : 0);
+            material.SetFloat("_LabelAlpha", labelOpacity);
+
             material.SetPass(0);
             Graphics.DrawMeshNow(_cube, transform.localToWorldMatrix * _local);
         }
@@ -240,6 +333,8 @@ namespace BrainVolume
         void OnDestroy()
         {
             if (Texture != null) Destroy(Texture);
+            if (LabelTex != null) Destroy(LabelTex);
+            if (LutTex != null) Destroy(LutTex);
         }
 
         // RGB voxels whose brightest channel is below `cut` -> 255,255,255. Parallel

@@ -34,6 +34,11 @@ Shader "Brain/FusedRaymarch"
         _ClipMin ("Clip box min (unit cube)", Vector) = (0, 0, 0, 0)
         _ClipMax ("Clip box max (unit cube)", Vector) = (1, 1, 1, 0)
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull", Float) = 1  // 1 = Front
+        [NoScaleOffset] _LabelTex ("Label ids (R8)", 3D) = "black" {}
+        [NoScaleOffset] _Lut ("Region LUT (256x1)", 2D) = "black" {}
+        _LabelMask ("Mask to labels (id>0)", Int) = 0
+        _LabelColor ("Tint by region colour", Int) = 0
+        _LabelAlpha ("Region tint strength", Range(0, 1)) = 0.6
     }
     SubShader
     {
@@ -55,6 +60,10 @@ Shader "Brain/FusedRaymarch"
             float _SatLow, _SatHigh, _EmptyCut, _Density, _Gamma, _Brightness, _Shade, _Jitter, _Steps;
             float4 _TexSize, _Flip;
             float4 _ClipMin, _ClipMax;   // visible sub-box of the unit cube (slicing)
+            sampler3D _LabelTex;
+            sampler2D _Lut;
+            float _LabelAlpha;
+            int _LabelMask, _LabelColor;
 
             struct v2f { float4 pos : SV_POSITION; float3 obj : TEXCOORD0; };
 
@@ -116,6 +125,10 @@ Shader "Brain/FusedRaymarch"
                 {
                     float3 p = camObj + d * (t0 + s * dt);
                     float3 q = lerp(p, 1.0 - p, _Flip.xyz);
+                    // region label (NEAREST) -- mask out non-tissue (background/fusion slabs)
+                    float lid = tex3Dlod(_LabelTex, float4(q, 0)).r;   // id/255
+                    if (_LabelMask == 1 && lid < 0.002) continue;      // label 0 = not a region
+
                     float3 c = tex3Dlod(_VolumeTex, float4(q, 0)).rgb;
                     float mx = max(max(c.r, c.g), c.b);
                     if (mx < _EmptyCut) continue;                  // black = no data
@@ -125,6 +138,11 @@ Shader "Brain/FusedRaymarch"
                     float a = saturate(v * _Density);
 
                     float3 col = saturate(pow(c, _Gamma) * _Brightness);
+                    if (_LabelColor == 1 && lid >= 0.002)  // tint by region colour
+                    {
+                        float3 lc = tex2Dlod(_Lut, float4((lid * 255.0 + 0.5) / 256.0, 0.5, 0, 0)).rgb;
+                        col = lerp(col, lc, _LabelAlpha);
+                    }
                     if (_Shade > 0.0)
                     {
                         float3 g = float3(
@@ -145,7 +163,7 @@ Shader "Brain/FusedRaymarch"
                         }
                     }
 
-                    outC += (1.0 - outA) * a * col;
+                    outC += (1.0 - outA) * a * col;        // fused colour (optionally region-tinted), shaded
                     outA += (1.0 - outA) * a;
                     if (outA > 0.985) break;
                 }

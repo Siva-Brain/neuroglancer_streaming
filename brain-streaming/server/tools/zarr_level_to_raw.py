@@ -48,13 +48,9 @@ def main():
                     help="base name -> <name>.raw/.json (default: <zarr-prefix>_L<level>, e.g. hb02_L6)")
     ap.add_argument("--channels", default="0,1,2",
                     help="source channels to pack as RGB (default 0,1,2)")
+    ap.add_argument("--force", action="store_true",
+                    help="write even if the level exceeds Unity's single-Texture3D limits")
     args = ap.parse_args()
-
-    if not args.name:
-        stem = os.path.basename(args.zarr.rstrip("/")).replace(".zarr", "")
-        m = re.match(r"[A-Za-z0-9]+", stem)
-        prefix = m.group(0) if m else "vol"
-        args.name = f"{prefix}_L{args.level}"
 
     is_http = args.zarr.lower().startswith(("http://", "https://"))
     src = (HttpZarrBrainSource(args.zarr) if is_http
@@ -62,45 +58,103 @@ def main():
     info = src.get_metadata()
     li = src.level_info(args.level)
     z, y, x, _ = li.shape
-    chans = [int(c) for c in args.channels.split(",") if c != ""]
+    is_label = info.channels == 1                        # 3D single-channel = segmentation
+    nch = 1 if is_label else 3
+
+    if not args.name:
+        stem = os.path.basename(args.zarr.rstrip("/")).replace(".zarr", "")
+        m = re.match(r"[A-Za-z0-9]+", stem)
+        prefix = m.group(0) if m else "vol"
+        args.name = f"{prefix}_L{args.level}" + ("_labels" if is_label else "")
 
     ez, ey, ex = (e * 1000.0 for e in info.extent_m)     # mm (z, y, x)
     vz, vy, vx = ez / z, ey / y, ex / x                  # mm per voxel
 
-    print(f"[export] L{args.level}: {z}x{y}x{x} voxels, channels {chans}, "
+    print(f"[export] L{args.level}: {z}x{y}x{x} voxels, "
+          f"{'LABELS (R8)' if is_label else 'RGB24'}, "
           f"voxel {vz:.3f}x{vy:.3f}x{vx:.3f} mm (z,y,x)")
+
+    # Unity single-Texture3D limits: every dimension <= 2048, and File.ReadAllBytes
+    # tops out at a ~2 GB byte[]. Finer levels need tiling (use the streaming client).
+    raw_bytes = z * y * x * nch
+    too_big_dim = max(z, y, x) > 2048
+    too_big_file = raw_bytes > 2_000_000_000
+    if too_big_dim or too_big_file:
+        why = []
+        if too_big_dim:
+            why.append(f"max dim {max(z, y, x)} > 2048")
+        if too_big_file:
+            why.append(f"raw {raw_bytes/1e9:.1f} GB > 2 GB")
+        print(f"[export] REFUSING L{args.level}: {', '.join(why)} -- too big for one "
+              f"Unity Texture3D. L4 is the finest single-volume level; finer needs "
+              f"tiling (the streaming client). Pass --force to write it anyway.",
+              file=sys.stderr)
+        if not args.force:
+            sys.exit(2)
+
     t0 = time.time()
-    vol = src.get_roi(args.level, 0, z, 0, y, 0, x, channels=chans, workers=192)
-    # pad/truncate to exactly 3 channels (Unity RGB24)
-    if vol.shape[-1] == 1:
-        vol = np.repeat(vol, 3, axis=-1)
-    elif vol.shape[-1] == 2:
-        vol = np.concatenate([vol, vol[..., :1]], axis=-1)
-    vol = np.ascontiguousarray(vol[..., :3], dtype=np.uint8)   # (z, y, x, 3) C-order
+    if is_label:
+        # labels are 3D (no channel axis) -> get_roi's shard path is 4D-only; read
+        # via get_region (uses get_chunk, which handles 3D). NEAREST in Unity.
+        vol = src.get_region(args.level, 0, (slice(0, z), slice(0, y), slice(0, x)))
+        vol = np.ascontiguousarray(vol[..., :1], dtype=np.uint8)    # (z, y, x, 1)
+    else:
+        chans = [int(c) for c in args.channels.split(",") if c != ""]
+        vol = src.get_roi(args.level, 0, z, 0, y, 0, x, channels=chans, workers=192)
+        if vol.shape[-1] == 1:
+            vol = np.repeat(vol, 3, axis=-1)
+        elif vol.shape[-1] == 2:
+            vol = np.concatenate([vol, vol[..., :1]], axis=-1)
+        vol = np.ascontiguousarray(vol[..., :3], dtype=np.uint8)    # (z, y, x, 3)
     print(f"[export] read {vol.nbytes/1e6:.1f} MB in {time.time()-t0:.1f}s")
 
     os.makedirs(args.out, exist_ok=True)
     raw_path = os.path.join(args.out, args.name + ".raw")
     json_path = os.path.join(args.out, args.name + ".json")
     with open(raw_path, "wb") as f:
-        f.write(vol.tobytes())                            # x fastest, y, z; RGB interleaved
+        f.write(vol.tobytes())                            # x fastest, y, z (RGB interleaved)
 
     meta = {
         "width": int(x), "height": int(y), "depth": int(z),   # Unity Texture3D dims
-        "channels": 3, "format": "RGB24",
-        "colorMode": "rgb-white-background",                  # shader: 1-max(rgb), black=empty
+        "channels": nch, "format": "R8" if is_label else "RGB24",
+        "colorMode": "label-ids" if is_label else "rgb-white-background",
         "level": int(args.level),
         "voxelSizeMM": [float(vx), float(vy), float(vz)],      # (x, y, z)
         "sizeMM": [float(ex), float(ey), float(ez)],          # (x, y, z) extent
         "source": args.zarr,
     }
+
+    # For a label volume, also emit a 256-entry RGB LUT (<name>.lut, 768 bytes) from
+    # the sibling manifest.json so Unity can colour regions. id 0 stays black.
+    if is_label and not is_http:
+        man_path = os.path.join(os.path.dirname(args.zarr.rstrip("/")), "manifest.json")
+        if os.path.exists(man_path):
+            lut = np.zeros((256, 3), np.uint8)
+            with open(man_path) as mf:
+                regions = json.load(mf).get("regions", [])
+            for r in regions:
+                rid = int(r["id"]) & 255
+                c = r.get("color", [255, 255, 255])
+                lut[rid] = c[:3]
+            lut_path = os.path.join(args.out, args.name + ".lut")
+            with open(lut_path, "wb") as lf:
+                lf.write(lut.tobytes())
+            meta["lut"] = args.name + ".lut"
+            meta["regionCount"] = len(regions)
+            print(f"[export] wrote {lut_path} ({len(regions)} regions)")
+
     with open(json_path, "w") as f:
         json.dump(meta, f, indent=2)
 
     print(f"[export] wrote {raw_path} ({os.path.getsize(raw_path)/1e6:.1f} MB)")
     print(f"[export] wrote {json_path}")
-    print(f"[export] copy both to the SRD machine's StreamingAssets/Fused/ and set "
-          f"FusedVolumeLoader.baseName = {args.name!r}")
+    if is_label:
+        fused = args.name.replace("_labels", "")
+        print(f"[export] copy to StreamingAssets/Fused/; set FusedVolumeLoader.labelName "
+              f"= {args.name!r} (alongside baseName = {fused!r})")
+    else:
+        print(f"[export] copy to StreamingAssets/Fused/; set FusedVolumeLoader.baseName "
+              f"= {args.name!r}")
 
 
 if __name__ == "__main__":

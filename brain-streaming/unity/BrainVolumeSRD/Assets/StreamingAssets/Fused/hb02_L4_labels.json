@@ -1,0 +1,22 @@
+{
+  "width": 1416,
+  "height": 776,
+  "depth": 485,
+  "channels": 1,
+  "format": "R8",
+  "colorMode": "label-ids",
+  "level": 4,
+  "voxelSizeMM": [
+    0.128,
+    0.128,
+    0.32000000000000006
+  ],
+  "sizeMM": [
+    181.248,
+    99.328,
+    155.20000000000002
+  ],
+  "source": "/home/users/azhar/projectM/viewer_data/fused_8um/hb02_labels.zarr",
+  "lut": "hb02_L4_labels.lut",
+  "regionCount": 125
+}
