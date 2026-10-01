@@ -528,8 +528,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d063ba29bdfbdad40875da86c0d70172, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.BrainApp
-  serverUrl: http://172.20.23.156:8095/
+  serverUrl: http://dgx3.humanbrain.in:8010
   channels: 0,3
+  pinCoarsest: 1
+  wholeBrain: 1
+  lodMin: -1
+  lodMax: -1
   targetCamera: {fileID: 963194227}
   brainRoot: {fileID: 976002975}
   volumeRenderer: {fileID: 976002974}
