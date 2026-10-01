@@ -46,3 +46,4 @@ brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Fused/*.raw.meta
 # Unity crash-recovery scene copies
 **/Assets/_Recovery/
 **/Assets/_Recovery.meta
+brain-streaming/unity/BrainVolumeSRD/.vs

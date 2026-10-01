@@ -391,7 +391,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &976002974
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -408,6 +408,7 @@ MonoBehaviour:
   raymarchMaterial: {fileID: 0}
   steps: 48
   density: 8
+  isRGB: 0
 --- !u!4 &976002975
 Transform:
   m_ObjectHideFlags: 0
@@ -430,7 +431,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 976002973}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: bdfcb8b0567055142b5af61639113695, type: 3}
   m_Name: 
@@ -528,8 +529,12 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d063ba29bdfbdad40875da86c0d70172, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.BrainApp
-  serverUrl: http://172.20.23.156:8095/
+  serverUrl: http://172.20.23.156:8010/
   channels: 0,3
+  pinCoarsest: 1
+  wholeBrain: 1
+  lodMin: -1
+  lodMax: -1
   targetCamera: {fileID: 963194227}
   brainRoot: {fileID: 976002975}
   volumeRenderer: {fileID: 976002974}
@@ -797,6 +802,93 @@ MonoBehaviour:
   zoomAroundBoundsCenter: 1
   invertPitch: 0
   rotateAroundBoundsCenter: 1
+--- !u!1 &1836338543
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1836338546}
+  - component: {fileID: 1836338545}
+  - component: {fileID: 1836338544}
+  m_Layer: 0
+  m_Name: FusedVolume
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1836338544
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1836338543}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 10627667b3315ba4dad884c54c60efc3, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.FusedVolumeLoader
+  folder: Fused
+  baseName: hb02_L4
+  unitsPerMm: 0.0025
+  material: {fileID: 0}
+  steps: 160
+  density: 0.3
+  windowLow: 0.05
+  windowHigh: 0.5
+  emptyCut: 0.04
+  flipX: 0
+  flipY: 0
+  flipZ: 0
+--- !u!114 &1836338545
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1836338543}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bdfcb8b0567055142b5af61639113695, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ModelMoveController
+  moveSpeed: 0.25
+  scaleSpeedWithViewSpace: 1
+  enableVertical: 1
+  leftDragTranslates: 1
+  metresPerPixel: 0.0015
+  arrowKeysRotate: 1
+  arrowDegreesPerSecond: 60
+  rightDragRotates: 1
+  degreesPerPixel: 0.25
+  zoomKeysEnabled: 1
+  zoomFactorPerSecond: 1.6
+  scrollZoomEnabled: 1
+  zoomFactorPerNotch: 1.1
+  minZoom: 0.25
+  maxZoom: 4
+  zoomAroundBoundsCenter: 1
+  invertPitch: 0
+  rotateAroundBoundsCenter: 1
+--- !u!4 &1836338546
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1836338543}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 1, z: 0, w: -0.00000004371139}
+  m_LocalPosition: {x: 0, y: 0.34, z: 0.36}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -810,3 +902,4 @@ SceneRoots:
   - {fileID: 1587403921}
   - {fileID: 1733100002}
   - {fileID: 1744200002}
+  - {fileID: 1836338546}
