@@ -1,0 +1,741 @@
+fileFormatVersion: 2
+guid: a1c109c43d41ef34b89b27cb73cba6b9
+ModelImporter:
+  serializedVersion: 24300
+  internalIDToNameTable: []
+  externalObjects:
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: ambiens gyrus
+    second: {fileID: 2100000, guid: d575300dc28b76840ab838046863bbc6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: amygdalohippocampal area
+    second: {fileID: 2100000, guid: 3705c813a929f494c8ad0075590cc39a, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: amygdaloid complex
+    second: {fileID: 2100000, guid: 41ab5728f6bbd664993412089cfb4cf1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: angular gyrus
+    second: {fileID: 2100000, guid: b12a852aca6818b4d87f688e03f32eda, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior amygdaloid area
+    second: {fileID: 2100000, guid: f3a3d00592b34bc4ea1f39eef045c45d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior commissure
+    second: {fileID: 2100000, guid: 50db3bed19b3ac54c9ed0a4c9934f798, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior cortical nucleus
+    second: {fileID: 2100000, guid: 36a7143fcf6c47545b904e7dc11e89eb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior horn of lateral ventricle
+    second: {fileID: 2100000, guid: f6b7fac2cbbe76c4eaafdcc89d76953d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior intermediate orbital gyrus
+    second: {fileID: 2100000, guid: 3a4f8302517a1394cb9f2295e24cd45d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior nuclear complex of thalamus
+    second: {fileID: 2100000, guid: 88befed82d2027843a24b67b30ad3819, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior olfactory nucleus
+    second: {fileID: 2100000, guid: c2fdb32eba501ab4ab0da88ac3d4867e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: anterior parahippocampal gyrus
+    second: {fileID: 2100000, guid: 78ad4031cd9154a4f8a2e8aaa87bb7d0, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: atrium of lateral ventricle
+    second: {fileID: 2100000, guid: 65034eee518e6824d8846f45c26d3339, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: basal forebrain
+    second: {fileID: 2100000, guid: 72456b0de8f30d14684ca6317e3af91e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: basolateral nucleus (basal nucleus)
+    second: {fileID: 2100000, guid: cd27fe2b470d830498061f9e8746bcd5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: basomedial nucleus (accessory basal nucleus)
+    second: {fileID: 2100000, guid: 0b5ac8ee079ae8c4d882c691c7ab2eef, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: bed nucleus of stria terminalis
+    second: {fileID: 2100000, guid: c6407f207d663c74d9c7a28638c7748f, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: body of caudate
+    second: {fileID: 2100000, guid: bd21eee954239fb4690247ce3fabd71e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: body of hippocampus
+    second: {fileID: 2100000, guid: dbb2164f4a2413c438d2e42ddc367817, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: body of lateral ventricle
+    second: {fileID: 2100000, guid: d76f287a29f91fc49b0e17399c22a93e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: brain shell
+    second: {fileID: 2100000, guid: 45c3aee9ea448104a8f3c68acb0edbf6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: central nuclear group
+    second: {fileID: 2100000, guid: 86a2189c1ca9c3c43ad06f1f2385e2fc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: centromedian nucleus of thalamus
+    second: {fileID: 2100000, guid: 049643a559c65d440b01ab98e8ea817a, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: cerebral peduncle (crus cerebri)
+    second: {fileID: 2100000, guid: c375e5d791eb8db458cd7faa9eef11c1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: cingulate gyrus, caudal (posterior) part
+    second: {fileID: 2100000, guid: 0255c60c7c068f442a96fce6b099ba96, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: cingulate gyrus, rostral (anterior) part
+    second: {fileID: 2100000, guid: e2d2cb95a0b839541937df2e2cfbdc61, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: cingulo-parahippocampal isthmus
+    second: {fileID: 2100000, guid: 16297193109c34645bd258baa611906c, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: claustrum
+    second: {fileID: 2100000, guid: 8e011805c0418a242a322858cb8f6e3f, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: corpus callosum
+    second: {fileID: 2100000, guid: 2f2694e24516654418ccfc75f0271678, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: cuneus
+    second: {fileID: 2100000, guid: f856d79f47abc6e48ac7fa86bf7fbf29, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: dorsal lateral geniculate nucleus
+    second: {fileID: 2100000, guid: b71e373d57f46a14f9cc2c9b074847dc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: external segment of globus pallidus
+    second: {fileID: 2100000, guid: 04a5112e2755b10448eed8c4573dbebb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: fornix
+    second: {fileID: 2100000, guid: 1feffee0873b8dd4d86463fe4048b2ae, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: fourth ventricle
+    second: {fileID: 2100000, guid: 0ba80bc32f4e8324c90dc4a97a4794f8, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: frontal agranular insular cortex (area FI)
+    second: {fileID: 2100000, guid: e63e5c1b1666d744895557d8dc40311f, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: frontal operculum
+    second: {fileID: 2100000, guid: 1b8a601f7f18dc242b70ecfbb93d1cb8, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: frontal pole
+    second: {fileID: 2100000, guid: faf00a9470c522247a8c07431721ef1a, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: frontomarginal gyrus
+    second: {fileID: 2100000, guid: 1b0461284e7c31f4d89d5132dc1c7a31, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: gyrus rectus (straight gyrus)
+    second: {fileID: 2100000, guid: a4b49bb91a02f6040a632f0b4c82359b, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: habenular nuclei
+    second: {fileID: 2100000, guid: d4e8af25c0061bb47824fbf73b2b9131, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: head of caudate
+    second: {fileID: 2100000, guid: 9b3b2856177d2574b81154ad4433a838, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: head of hippocampus
+    second: {fileID: 2100000, guid: 8c9f3bf3b32ff1f478ad60c186531c73, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: hypothalamus
+    second: {fileID: 2100000, guid: 5416102ad3da0fb49bee5ecbca905885, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: inferior colliculus
+    second: {fileID: 2100000, guid: 9b99415f2e2c98c40931e4f457e6a59e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: inferior frontal gyrus, opercular part
+    second: {fileID: 2100000, guid: 06607ed9b53bf4e43a25c25e4ce06be3, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: inferior frontal gyrus, triangular part
+    second: {fileID: 2100000, guid: 8e8cb6ab17e84d64ba0a34ee85cfb202, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: inferior horn of lateral ventricle
+    second: {fileID: 2100000, guid: 606150dff1a896c4ea01aa4c0956214e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: inferior occipital gyrus
+    second: {fileID: 2100000, guid: a038a6004e66a8244945062123d697c7, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: inferior temporal gyrus
+    second: {fileID: 2100000, guid: e38da2e1d62ae934ca396d9ce607311d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: internal segment of globus pallidus
+    second: {fileID: 2100000, guid: 9875fbfc71f4b26468724c2dbab648d1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: lateral dorsal nucleus of thalamus
+    second: {fileID: 2100000, guid: 453cc6b1ce4de1246a3672ab67ac42bc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: lateral nucleus
+    second: {fileID: 2100000, guid: 2463a9e1156f76947a6f116632de6f7d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: lateral olfactory gyrus
+    second: {fileID: 2100000, guid: e04fef31a9278e14ba4762d91e07a4ca, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: lateral orbital gyrus
+    second: {fileID: 2100000, guid: 4a1296551a4aa6a4c8f4aa3e1cfc6a22, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: lateral posterior nucleus of thalamus
+    second: {fileID: 2100000, guid: 3aa0e375033fcb944a19299d2fc91202, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: limen insula
+    second: {fileID: 2100000, guid: 6173a5f6a082ef443a54e2e77402e5b3, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: lingual gyrus
+    second: {fileID: 2100000, guid: 8c3d3d8d90bf962498aaaf58a57b4e50, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: long insular gyri
+    second: {fileID: 2100000, guid: 6d1217c0996d6f64ea48ccc7c4afbea0, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: mammillary region of HTH
+    second: {fileID: 2100000, guid: 63f0a537d0becdc469a25882abd26aba, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: mammillothalamic tract
+    second: {fileID: 2100000, guid: 466e1a6f0152f3d4f82cd440cac2461e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: medial geniculate nuclei
+    second: {fileID: 2100000, guid: 3bbf5810fb888e14dad2357357ec1fbc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: medial nucleus
+    second: {fileID: 2100000, guid: 10f48a012fa6fde45913b760203cd8ad, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: medial orbital gyrus
+    second: {fileID: 2100000, guid: 6ac36cbfd9d655145890a23a3a93bbd0, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: mediodorsal nucleus of thalamus
+    second: {fileID: 2100000, guid: 1f4c4f69c4f7bb149a702d5a0aaa581b, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: midbrain tegmentum
+    second: {fileID: 2100000, guid: 15fd5193400c0a04381790405602b9c3, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: middle frontal gyrus
+    second: {fileID: 2100000, guid: fefa95c54774e9b4cbbef08d6a560acd, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: middle temporal gyrus
+    second: {fileID: 2100000, guid: ebbba23fda0e6e9459afb1d5f4619ce6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: midline nuclear complex
+    second: {fileID: 2100000, guid: d0714c553fdde414b9f225800d73f718, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: nucleus accumbens
+    second: {fileID: 2100000, guid: b7c3e389f1ae68f48b5d7dd4b83a3b3e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: occipital pole
+    second: {fileID: 2100000, guid: 32d7c83319503994a9b66b13137d6d6e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: occipitotemporal (fusiform) gyrus, occipital part
+    second: {fileID: 2100000, guid: 18cd82287c537764592c64537e68efdb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: occipitotemporal (fusiform) gyrus, temporal part
+    second: {fileID: 2100000, guid: 6fc1c1c7ded76964eb4029635b79f4d5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: olfactory tract
+    second: {fileID: 2100000, guid: 9f8f9471c9a27864fa51b5b69d9be626, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: optic radiation
+    second: {fileID: 2100000, guid: 68f459a059af34542b905b00b4757ae6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: optic tract
+    second: {fileID: 2100000, guid: 61f56e5623cc3754ba312706a33dbbbb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: paracentral lobule, caudal part
+    second: {fileID: 2100000, guid: f1c17e0288a0c7546b76f53ab7ac2661, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: paracentral lobule, rostral part
+    second: {fileID: 2100000, guid: 45f5edacaf028a643b9468ba8b3e26b1, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: paracingulate gyrus
+    second: {fileID: 2100000, guid: 6c2b90dcb25883f4e940f3de59b71c74, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: parafascicular nucleus of thalamus
+    second: {fileID: 2100000, guid: 3577005c3f66b154285b5d5211563dc6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: parietal operculum
+    second: {fileID: 2100000, guid: 876c92959ae030c42adcda41dd736d52, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: perirhinal gyrus ( rostral part of FuGt)
+    second: {fileID: 2100000, guid: 3766bc25ee4ffd04ea7fb2b115be1328, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: pineal body
+    second: {fileID: 2100000, guid: 08e56e6d8cb41b34f9d085e1b5ac911a, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: piriform cortex
+    second: {fileID: 2100000, guid: dc65aa8c0f62996468b7dbb76c36ea18, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: planum polare
+    second: {fileID: 2100000, guid: 9cfbd1e5b935e6849a84c613699dfcaa, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: planum temporale
+    second: {fileID: 2100000, guid: b891049876d76fb4297b1921a44172cb, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: postcentral gyrus
+    second: {fileID: 2100000, guid: f5736123bd6f0b9499d783815dd03818, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: posterior cortical nucleus
+    second: {fileID: 2100000, guid: 53d32b6b928a6274a803b7638ecaec3e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: posterior horn of lateral ventricle
+    second: {fileID: 2100000, guid: f1a80f428dfbc944f8f7a33e5ab01c88, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: posterior intermediate orbital gyrus
+    second: {fileID: 2100000, guid: 747dc866799dbaf4e947278e5edea186, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: posterior parahippocampal gyrus
+    second: {fileID: 2100000, guid: 4b2702bce2e8a12479d28e87a6363e10, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: posteroventral putamen
+    second: {fileID: 2100000, guid: e769af7c174cba24ab06a93811c7874d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: precentral gyrus
+    second: {fileID: 2100000, guid: 55486751846d84545a24a949b02b3e0a, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: precuneus
+    second: {fileID: 2100000, guid: 783837b790af64f40a6a1a16da9069e3, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: preoptic region of HTH
+    second: {fileID: 2100000, guid: 15eab48e1adaf314ab489aaa527a1781, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: pretectal region
+    second: {fileID: 2100000, guid: caf6f090cad15044d904e1563931d617, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: pulvinar of thalamus
+    second: {fileID: 2100000, guid: d328ce9e1e4fe5c489adbecb9eb4e285, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: putamen
+    second: {fileID: 2100000, guid: a9653a324a3607e41a22f633b43782bc, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: red nucleus
+    second: {fileID: 2100000, guid: 016028260cb2059459e42b83ede7d1e5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: reuniens nucleus (medioventral nucleus) of thalamus
+    second: {fileID: 2100000, guid: 65bf6262d81c05c49a0b3a7001155be5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: rostral gyrus
+    second: {fileID: 2100000, guid: 35380ed388be65d4f9cd2dfab465cde5, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: septal nuclei
+    second: {fileID: 2100000, guid: a3acaa23ba590e14c99a3bbce4bb48f7, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: short insular gyri
+    second: {fileID: 2100000, guid: 079f34aebafd67a45a5340b90dd51ca6, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: subcallosal gyrus (parolfactory gyrus)
+    second: {fileID: 2100000, guid: d58f4dad515c30b47b534ac39bfc01ae, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: substantia nigra
+    second: {fileID: 2100000, guid: 17ff4a18af7394b47bdd545e9b7db065, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: subthalamic nucleus
+    second: {fileID: 2100000, guid: d46c4b5b5ab990644b13a9b2131dc76c, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: superior colliculus
+    second: {fileID: 2100000, guid: 276e61786243fcb4d8c66d66edc8f0a4, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: superior frontal gyrus
+    second: {fileID: 2100000, guid: 8db9a0a2d91185340b0ca50d6da27289, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: superior occipital gyrus
+    second: {fileID: 2100000, guid: 699073834348df440926bb6ce0ec6925, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: superior temporal gyrus
+    second: {fileID: 2100000, guid: b32801fcd56f62148916d67cab1b3298, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: supramarginal gyrus
+    second: {fileID: 2100000, guid: 4b7885fb601821649b47d3523383ad1d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: supraoptic region of HTH
+    second: {fileID: 2100000, guid: db781f144296bcd4d87f1fbc547a78d0, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: supraparietal lobule
+    second: {fileID: 2100000, guid: f9e88a763f12d9b4a86ac593f1bb99ab, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: tail of caudate
+    second: {fileID: 2100000, guid: 67606698222a93f4ea08a647d081fcef, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: tail of hippocampus
+    second: {fileID: 2100000, guid: 57b3d4123223a8945bfd33d64cfcb036, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: temporal agranular insular cortex (area TI)
+    second: {fileID: 2100000, guid: 3aea8a761fa768a4cb4a452c9094103f, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: temporal pole
+    second: {fileID: 2100000, guid: ba75c634f9266374e907660256a24716, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: thalamus
+    second: {fileID: 2100000, guid: d6f7c765e34a6cc47b0237973c00ef6e, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: third ventricle
+    second: {fileID: 2100000, guid: 06521b98dd7155d48a59d15bbbcaf77a, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: transverse temporal gyrus (Heschl's gyrus)
+    second: {fileID: 2100000, guid: 64f3dcbd49214944babe7c83b7420031, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: tuberal region of HTH
+    second: {fileID: 2100000, guid: 8a0b18496b1811544a5534460296c7ca, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: ventral anterior nucleus of thalamus
+    second: {fileID: 2100000, guid: 9d6fc562a483dc949b6194f74892592f, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: ventral lateral nucleus of thalamus
+    second: {fileID: 2100000, guid: 84dd598d017fd4b4c9f2bb8359cd4add, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: ventral posterior lateral nucleus
+    second: {fileID: 2100000, guid: b184cbf755a292c46a0633ba259ba77d, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: ventral posterior medial nucleus
+    second: {fileID: 2100000, guid: 19e8520d9da1db843962663676bf1e11, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: white matter of forebrain
+    second: {fileID: 2100000, guid: e72f6bf3dd165494d9c04787f4e86553, type: 2}
+  - first:
+      type: UnityEngine:Material
+      assembly: UnityEngine.CoreModule
+      name: zona incerta
+    second: {fileID: 2100000, guid: 68078d8b077766248a463254b6c61e35, type: 2}
+  materials:
+    materialImportMode: 2
+    materialName: 0
+    materialSearch: 1
+    materialLocation: 1
+    searchTexturesGlobally: 0
+  animations:
+    legacyGenerateAnimations: 4
+    bakeSimulation: 0
+    resampleCurves: 1
+    optimizeGameObjects: 0
+    removeConstantScaleCurves: 0
+    motionNodeName: 
+    animationImportErrors: 
+    animationImportWarnings: 
+    animationRetargetingWarnings: 
+    animationDoRetargetingWarnings: 0
+    importAnimatedCustomProperties: 0
+    importConstraints: 0
+    animationCompression: 1
+    animationRotationError: 0.5
+    animationPositionError: 0.5
+    animationScaleError: 0.5
+    animationWrapMode: 0
+    extraExposedTransformPaths: []
+    extraUserProperties: []
+    clipAnimations: []
+    isReadable: 0
+  meshes:
+    lODScreenPercentages: []
+    globalScale: 1
+    meshCompression: 0
+    addColliders: 0
+    useSRGBMaterialColor: 1
+    sortHierarchyByName: 1
+    importPhysicalCameras: 1
+    importVisibility: 1
+    importBlendShapes: 1
+    importCameras: 1
+    importLights: 1
+    nodeNameCollisionStrategy: 1
+    fileIdsGeneration: 2
+    swapUVChannels: 0
+    generateSecondaryUV: 0
+    useFileUnits: 1
+    keepQuads: 0
+    weldVertices: 1
+    bakeAxisConversion: 0
+    preserveHierarchy: 0
+    skinWeightsMode: 0
+    maxBonesPerVertex: 4
+    minBoneWeight: 0.001
+    optimizeBones: 1
+    generateMeshLods: 0
+    meshLodGenerationFlags: 0
+    maximumMeshLod: -1
+    meshOptimizationFlags: -1
+    indexFormat: 0
+    secondaryUVAngleDistortion: 8
+    secondaryUVAreaDistortion: 15.000001
+    secondaryUVHardAngle: 88
+    secondaryUVMarginMethod: 1
+    secondaryUVMinLightmapResolution: 40
+    secondaryUVMinObjectScale: 1
+    secondaryUVPackMargin: 4
+    useFileScale: 1
+    strictVertexDataChecks: 0
+  tangentSpace:
+    normalSmoothAngle: 60
+    normalImportMode: 0
+    tangentImportMode: 3
+    normalCalculationMode: 4
+    legacyComputeAllNormalsFromSmoothingGroupsWhenMeshHasBlendShapes: 0
+    blendShapeNormalImportMode: 1
+    normalSmoothingSource: 0
+  referencedClips: []
+  importAnimation: 1
+  humanDescription:
+    serializedVersion: 3
+    human: []
+    skeleton: []
+    armTwist: 0.5
+    foreArmTwist: 0.5
+    upperLegTwist: 0.5
+    legTwist: 0.5
+    armStretch: 0.05
+    legStretch: 0.05
+    feetSpacing: 0
+    globalScale: 1
+    rootMotionBoneName: 
+    hasTranslationDoF: 0
+    hasExtraRoot: 0
+    skeletonHasParents: 1
+  lastHumanDescriptionAvatarSource: {instanceID: 0}
+  autoGenerateAvatarMappingIfUnspecified: 1
+  animationType: 2
+  humanoidOversampling: 1
+  avatarSetup: 0
+  addHumanoidExtraRootOnlyWhenUsingAvatar: 1
+  importBlendShapeDeformPercent: 1
+  remapMaterialsIfMaterialImportModeIsNone: 0
+  additionalBone: 0
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 

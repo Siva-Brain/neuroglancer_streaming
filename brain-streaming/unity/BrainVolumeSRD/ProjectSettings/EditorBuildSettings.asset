@@ -4,7 +4,31 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/0_SRDSampleHome/Scenes/SRDisplaySampleHome.unity
+    guid: 83729bd38bc7fc248a91e9063d828034
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/1_SRDSimpleSample/Scenes/SRDisplaySimpleSample.unity
+    guid: cd69d5e64cd3a38409c8dee85cfb1da2
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/2_SRDLookAtSample/Scenes/SRDisplayLookAtSample.unity
+    guid: 74388a34ff8cdaa408e78ce46c8a30e7
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/3_SRDUISample/Scenes/SRDisplayUISample.unity
+    guid: 08177851ea5f03e4f9789f1b0df663be
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/4_SRDPostProcessingSample/Scenes/SRDisplayPostProcessingSample.unity
+    guid: 017e1641cc5332f46b35580fd5d4e4d3
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/5_SRD3DRaycastSample/Scenes/SRDisplay3DRaycastSample.unity
+    guid: a51f7d80d13c1944a831253a9e8341dd
+  - enabled: 0
+    path: Assets/SRDisplayUnityPlugin/Samples/6_SRD2DViewUISample/Scenes/SRDisplay2DViewUISample.unity
+    guid: 004e6daca576b2b4ab6bd75019bd3f15
+  - enabled: 1
+    path: Assets/Scenes/SampleScene.unity
+    guid: 9fc0d4010bbf28b4594072e72b8655ab
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 289c1b55c9541489481df5cc06664110, type: 3}
   m_UseUCBPForAssetBundles: 0
