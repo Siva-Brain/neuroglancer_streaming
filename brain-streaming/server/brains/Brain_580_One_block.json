@@ -1,0 +1,20 @@
+{
+  "name": "Brain_580_One_block",
+  "brain": "hb02",
+  "space": "RAS-mm",
+  "rgb": true,
+  "description": "hb02 fused 8um RGB, one block (whole brain), with region label overlay.",
+  "blocks": [
+    {
+      "id": "hb02",
+      "source": "/home/users/azhar/projectM/viewer_data/fused_8um/hb02_fused.zarr",
+      "voxel_um": null,
+      "omeToRas": null,
+      "label_map": {
+        "source": "/home/users/azhar/projectM/viewer_data/fused_8um/hb02_labels.zarr",
+        "name": "regions",
+        "lut": "/home/users/azhar/projectM/viewer_data/fused_8um/manifest.json"
+      }
+    }
+  ]
+}

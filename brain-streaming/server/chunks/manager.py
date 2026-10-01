@@ -152,8 +152,11 @@ class ChunkManager:
         return (xmin, ymin, zmin, xmax, ymax, zmax)
 
     # ---- serialization (BVX2: world bbox + optional GPU resample) -----------
-    def serialize(self, cd: ChunkData, channels: Optional[List[int]] = None,
-                  max_xy: Optional[int] = None, glass: bool = False) -> bytes:
+    def process(self, cd: ChunkData, channels: Optional[List[int]] = None,
+                max_xy: Optional[int] = None, glass: bool = False):
+        """Produce the serve-ready uint8 brick array (channel-select -> resample ->
+        glass), returning (arr, orig_dims). The resident L4 cache reuses this so a
+        cached slab is byte-identical to a freshly-served one."""
         arr = cd.array
         odz, ody, odx, _ = arr.shape                      # ORIGINAL dims -> world bbox
         if channels is not None:
@@ -165,22 +168,29 @@ class ChunkManager:
             arr = np.ascontiguousarray(self.processor.resample_xy_max(arr, cap), dtype=np.uint8)
 
         # Nissl see-through DVR: normalize gray + append precomputed gradient so
-        # the client gets [gray, mask, grad] (3 ch). Done after resample so the
-        # gradient is taken at the resolution actually displayed. Needs the gray
-        # and mask channels (the viewer requests channels=[0,3]).
+        # the client gets [gray, mask, grad] (3 ch). Needs the gray+mask channels.
         if glass and self.processor is not None and arr.shape[-1] >= 2:
             arr = np.ascontiguousarray(
                 self.processor.glass_pack(arr, gray_idx=0, mask_idx=1,
                                           lohi=self.norm_lohi), dtype=np.uint8)
+        return arr, (odz, ody, odx)
 
+    def pack_brick(self, level: int, origin_vox, orig_dims, arr: np.ndarray) -> bytes:
+        """BVX2 header + voxels for an already-processed brick array."""
+        arr = np.ascontiguousarray(arr, dtype=np.uint8)
         dz, dy, dx, nc = arr.shape
-        oz, oy, ox, _ = cd.origin_vox
-        bbox = self.world_bbox_mm(cd.level, cd.origin_vox, (odz, ody, odx))
-        header = (_MAGIC + struct.pack("<BBH", cd.level, nc, 0)
+        oz, oy, ox = origin_vox[0], origin_vox[1], origin_vox[2]
+        bbox = self.world_bbox_mm(level, (oz, oy, ox, 0), orig_dims)
+        header = (_MAGIC + struct.pack("<BBH", level, nc, 0)
                   + struct.pack("<iii", oz, oy, ox)
                   + struct.pack("<HHH", dz, dy, dx)
                   + struct.pack("<6f", *bbox))
         return header + arr.tobytes()
+
+    def serialize(self, cd: ChunkData, channels: Optional[List[int]] = None,
+                  max_xy: Optional[int] = None, glass: bool = False) -> bytes:
+        arr, odims = self.process(cd, channels, max_xy, glass)
+        return self.pack_brick(cd.level, cd.origin_vox, odims, arr)
 
     # ---- introspection ------------------------------------------------------
     def records(self) -> List[ChunkRecord]:

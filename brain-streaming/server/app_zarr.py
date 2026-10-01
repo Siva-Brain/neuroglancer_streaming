@@ -42,6 +42,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from datasource import HttpZarrBrainSource
 from chunks import ChunkManager, LruChunkCache, CameraViewSelector
 from gpu import GpuProcessor
+import brain_registry as reg
+
+try:
+    import cupy as _cp                         # VRAM-resident L4 cache (optional)
+except Exception:  # noqa
+    _cp = None
 from streaming.view import (ViewRequest, ViewResponse, ChunkRequestBody,
                             ChunkCancelBody, PROTOCOL_DOC)
 
@@ -60,13 +66,15 @@ ZARR_ROOTS = list(DEFAULT_ZARR_ROOTS)
 # sagittal slab); the earlier 0.5 um override was wrong (it made 12 mm cubes that
 # would not reassemble). See BLOCK_META / _block_voxel_um below. None -> metadata.
 VOXEL_UM_FINEST = (20.0, 8.0, 8.0)
-MIN_LEVEL = 3
+MIN_LEVEL = 4
 DELAY_MS = 0.0
 BANDWIDTH_LIMIT_MBPS = 0.0        # 0 = unlimited
 CACHE_BYTES = 2 * 1024 * 1024 * 1024   # A100 box has 2 TB RAM; be generous
 WORKERS = 32                     # parallel prefetch workers (256 cores available)
 USE_GPU = True                   # A100 processing (falls back to CPU if absent)
-GPU_MAX_XY = 512                 # server-side downsample cap so bricks stay uniform
+GPU_MAX_XY = 1500                # server-side downsample cap so bricks stay uniform
+RESIDENT_LEVEL = 4               # hold this level + coarser fully in A100 VRAM; serve by
+                                 # slicing (finest resident = finest served; 0 = off)
 GLASS = True                     # Nissl see-through preprocessing (normalize + gradient)
 PREFETCH_TOP = 8                 # warm this many top-priority chunks on each view
 ROI_WORKERS = 192                # parallel inner-chunk range GETs for ROI (DDN can take it)
@@ -122,16 +130,72 @@ def _load_block_meta():
         return {}
 
 
-BLOCK_META = _load_block_meta()
+# Immutable histology registration (used only to BOOTSTRAP the default brain).
+_HIST_META = _load_block_meta()
+_HIST_BRAIN = next((m.get("brain") for m in _HIST_META.values()), None)
+
+# BLOCK_META is now DERIVED from the active brain (see _set_active_brain); it
+# keeps the same shape /api/transforms and _block_voxel_um expect: id -> dict
+# with omeToRas / voxel_um / brain / centerX.
+BLOCK_META: "Dict[str, dict]" = {}
+
+# active-brain state (one brain served at a time; hot-swapped via /api/brains)
+INITIAL_BRAIN = ""                          # "" = start with NO brain loaded; --brain overrides
+FORCE_BOOTSTRAP = False                     # --zarr given -> bootstrap + activate from roots
+ACTIVE_BRAIN: Optional[dict] = None
+ACTIVE_BRAIN_NAME: Optional[str] = None
 
 
 def _block_voxel_um(bid: str):
-    """Per-block finest voxel size (z,y,x microns): authoritative map, else fallback."""
+    """Per-block finest voxel size (z,y,x microns) from the active brain, else fallback."""
     m = BLOCK_META.get(bid)
-    if not m:
-        return VOXEL_UM_FINEST
-    ip = m.get("inPlaneScaleMeters", 8e-6) * 1e6
-    return (m["zScaleMeters"] * 1e6, ip, ip)
+    if m and m.get("voxel_um"):
+        return tuple(m["voxel_um"])
+    return VOXEL_UM_FINEST
+
+
+def _set_active_brain(brain: dict, name: str) -> None:
+    """Make `brain` the active one and rebuild the derived BLOCK_META from it."""
+    global ACTIVE_BRAIN, ACTIVE_BRAIN_NAME, BLOCK_META
+    ACTIVE_BRAIN = brain
+    ACTIVE_BRAIN_NAME = name
+    BLOCK_META = {
+        b["id"]: {"omeToRas": b.get("omeToRas"), "brain": brain.get("brain"),
+                  "voxel_um": b.get("voxel_um"), "centerX": b.get("centerX")}
+        for b in brain.get("blocks", [])
+    }
+
+
+def _ensure_registry_seed() -> None:
+    """Make sure the registry has the default 5-block brain available to SELECT
+    (created once from the hardcoded roots). Does NOT activate it -- by default
+    the server starts with no brain loaded until one is picked."""
+    if not reg.exists("Brain_580_whole"):
+        brain = reg.bootstrap_brain("Brain_580_whole", ZARR_ROOTS, _HIST_META,
+                                    VOXEL_UM_FINEST, brain_label=_HIST_BRAIN)
+        reg.save_brain(brain)
+        print(f"[brains] seeded registry with Brain_580_whole "
+              f"({len(brain['blocks'])} blocks)")
+
+
+def _activate_initial() -> None:
+    """Startup activation: load --brain / --zarr target if given; otherwise leave
+    NO brain active (the selector starts empty and the user picks one)."""
+    if FORCE_BOOTSTRAP:
+        name = INITIAL_BRAIN or "Brain_580_whole"
+        brain = reg.bootstrap_brain(name, ZARR_ROOTS, _HIST_META,
+                                    VOXEL_UM_FINEST, brain_label=_HIST_BRAIN)
+        reg.save_brain(brain)
+        _set_active_brain(brain, name)
+        build_blocks(force=True)
+    elif INITIAL_BRAIN:
+        if reg.exists(INITIAL_BRAIN):
+            _set_active_brain(reg.load_brain(INITIAL_BRAIN), INITIAL_BRAIN)
+            build_blocks(force=True)
+        else:
+            print(f"[brains] --brain {INITIAL_BRAIN!r} not found; starting with no brain")
+    else:
+        print("[brains] no brain active by default; pick one via the selector / /api/brains")
 
 app = FastAPI(title="DGX Brain Streaming (Zarr, multi-block)", version="3.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
@@ -147,11 +211,20 @@ class BlockCtx:
     manager: ChunkManager
     selector: CameraViewSelector
     default_transform: dict = field(default_factory=dict)
+    label_map: Optional[dict] = None       # {source,name,lut} or None (per active brain)
+    label_manager: object = None           # ChunkManager on the label zarr, when label_map set
 
 
 _gpu: Optional[GpuProcessor] = None
 _blocks: "Dict[str, BlockCtx]" = {}
 _order: List[str] = []
+
+# VRAM-resident cache: (block_id, level) -> {"arr": cupy/np array (z,y,x,c) uint8,
+# "dev": gpu index or None, "zc": z chunk size}. Serves L4-and-coarser bricks by
+# slicing instead of re-reading DDN + re-processing every request.
+_resident: "Dict[tuple, dict]" = {}
+_resident_lock = threading.Lock()
+_resident_building = False
 
 
 def _block_id_from_url(url: str) -> str:
@@ -186,38 +259,171 @@ def _auto_layout(ctxs: List[BlockCtx]) -> None:
         cursor += w + gap
 
 
-def build_blocks() -> "Dict[str, BlockCtx]":
+def build_blocks(force: bool = False) -> "Dict[str, BlockCtx]":
     global _gpu, _blocks, _order
-    if _blocks:
+    if _blocks and not force:
         return _blocks
-    _gpu = GpuProcessor(enabled=USE_GPU)
-    _gpu.warmup()                        # pre-compile downsample kernels (off user path)
+    if ACTIVE_BRAIN is None:
+        return _blocks                   # no brain selected -> nothing to build
+    if _gpu is None:
+        _gpu = GpuProcessor(enabled=USE_GPU)
+        _gpu.warmup()                    # pre-compile downsample kernels (off user path)
+    brain = ACTIVE_BRAIN
     ctxs: List[BlockCtx] = []
     seen: Dict[str, int] = {}
-    for url in ZARR_ROOTS:
-        bid = _block_id_from_url(url)
+    for blk in brain["blocks"]:
+        bid = blk["id"]
         if bid in seen:                     # de-dupe id collisions deterministically
             seen[bid] += 1
             bid = f"{bid}_{seen[bid]}"
         else:
             seen[bid] = 0
-        src = HttpZarrBrainSource(url, voxel_um_finest=_block_voxel_um(bid))
+        src = reg.make_source(blk)          # HTTP or local DDN, auto-detected
         mgr = ChunkManager(src, LruChunkCache(CACHE_BYTES),
                            workers=WORKERS, processor=_gpu, max_xy=GPU_MAX_XY)
         sel = CameraViewSelector(src, min_level=MIN_LEVEL)
-        ctx = BlockCtx(bid, url, src, mgr, sel)
+        ctx = BlockCtx(bid, blk["source"], src, mgr, sel, label_map=blk.get("label_map"))
+        if blk.get("label_map") and blk["label_map"].get("source"):
+            # label volume streams through its own manager; max_xy=0 so label ids
+            # are NEVER mean-resampled (that would blend region ids into garbage).
+            lsrc = reg.make_source({"source": blk["label_map"]["source"],
+                                    "voxel_um": blk.get("voxel_um")})
+            ctx.label_manager = ChunkManager(lsrc, LruChunkCache(CACHE_BYTES),
+                                             workers=WORKERS, processor=_gpu, max_xy=0)
         ctxs.append(ctx)
         _blocks[bid] = ctx
         _order.append(bid)
-        print(f"[dgx-zarr] block {bid}: {url}")
+        kind = "local" if reg.is_local(blk["source"]) else "http"
+        lbl = " +labels" if blk.get("label_map") else ""
+        print(f"[dgx-zarr] block {bid} ({kind}{lbl}): {blk['source']}")
     _auto_layout(ctxs)
-    print(f"[dgx-zarr] gpu={_gpu.info()} workers={WORKERS} max_xy={GPU_MAX_XY} "
-          f"blocks={_order}")
+    print(f"[dgx-zarr] brain={ACTIVE_BRAIN_NAME} gpu={_gpu.info()} "
+          f"workers={WORKERS} max_xy={GPU_MAX_XY} blocks={_order}")
     return _blocks
+
+
+def _teardown_blocks() -> None:
+    """Release the current blocks (worker pools) and caches before a brain swap."""
+    global _blocks, _order, _roi_cache_bytes
+    for ctx in _blocks.values():
+        for mgr in (ctx.manager, ctx.label_manager):
+            try:
+                if mgr is not None:
+                    mgr._pool.shutdown(wait=False)
+            except Exception:  # noqa
+                pass
+    _blocks = {}
+    _order = []
+    with _roi_cache_lock:
+        _roi_cache.clear()
+        _roi_cache_bytes = 0
+    _resident_clear()
+
+
+# ---------- VRAM-resident L4 cache (docs/performance-plan.md Item 2) ----------
+def _resident_clear() -> None:
+    global _resident
+    with _resident_lock:
+        had = bool(_resident)
+        _resident = {}
+    if had and _cp is not None:
+        try:
+            _cp.get_default_memory_pool().free_all_blocks()
+        except Exception:  # noqa
+            pass
+
+
+def _build_resident() -> None:
+    """Background: load RESIDENT_LEVEL..coarsest fully into A100 VRAM per block as
+    serve-ready bricks (post channel-select/resample/glass), then serve those
+    levels by slicing. Finest resident = finest served (never below RESIDENT_LEVEL)."""
+    global _resident_building
+    if RESIDENT_LEVEL <= 0 or ACTIVE_BRAIN is None:
+        return
+    with _resident_lock:
+        if _resident_building:
+            return
+        _resident_building = True
+    try:
+        build_blocks()
+        rgb = bool((ACTIVE_BRAIN or {}).get("rgb"))
+        channels = [0, 1, 2] if rgb else [0, 3]
+        glass = (not rgb) and GLASS
+        ndev = _gpu.device_count if (_gpu and _gpu.available) else 0
+        di = 0
+        for bid, ctx in list(_blocks.items()):
+            info = ctx.source.get_metadata()
+            for level in range(RESIDENT_LEVEL, info.coarsest_level + 1):
+                with _resident_lock:
+                    if (bid, level) in _resident or ACTIVE_BRAIN is None:
+                        continue
+                try:
+                    dev = (di % ndev) if ndev else None
+                    t0 = time.time()
+                    entry = _build_resident_level(ctx, level, channels, glass, dev)
+                    with _resident_lock:
+                        if ACTIVE_BRAIN is None:       # brain swapped mid-build
+                            return
+                        _resident[(bid, level)] = entry
+                    di += 1
+                    print(f"[resident] {bid} L{level} -> VRAM dev{dev} "
+                          f"{tuple(entry['arr'].shape)} {entry['arr'].size/1e9:.2f} GB "
+                          f"in {time.time()-t0:.1f}s")
+                except Exception as e:  # noqa
+                    print(f"[resident] {bid} L{level} failed: {e}")
+    finally:
+        with _resident_lock:
+            _resident_building = False
+
+
+def _build_resident_level(ctx, level, channels, glass, dev):
+    li = ctx.source.level_info(level)
+    sz, sy, sx, _ = li.shape
+    zc = li.chunk_shape[0]                            # z chunk size (1 for these datasets)
+    full = ctx.source.get_roi(level, 0, sz, 0, sy, 0, sx, channels=channels,
+                              workers=ROI_WORKERS)     # (z,y,x,len(channels)) uint8
+    cap = ctx.manager.max_xy
+    if cap and _gpu is not None and max(sy, sx) > cap:   # keep in lock-step with serialize
+        full = np.ascontiguousarray(_gpu.resample_xy_max(full, cap, device=dev), np.uint8)
+    if glass and _gpu is not None and full.shape[-1] >= 2:
+        out = np.empty((full.shape[0], full.shape[1], full.shape[2], 3), np.uint8)
+        for z in range(full.shape[0]):               # per-slab glass == per-brick serving
+            out[z:z + 1] = _gpu.glass_pack(full[z:z + 1], gray_idx=0, mask_idx=1,
+                                           lohi=ctx.manager.norm_lohi, device=dev)
+        arr = out
+    else:
+        arr = np.ascontiguousarray(full, np.uint8)
+    if _cp is not None and dev is not None:
+        with _cp.cuda.Device(dev):
+            arr = _cp.asarray(arr)                   # -> A100 VRAM
+    return {"arr": arr, "dev": dev, "zc": zc}
+
+
+def _serve_resident(ctx: BlockCtx, level: int, coords):
+    """BVX2 bytes for a z-slab brick sliced from VRAM; None if not resident."""
+    if coords[1] != 0 or coords[2] != 0:             # only whole-slab bricks are resident
+        return None
+    with _resident_lock:
+        entry = _resident.get((ctx.block_id, level))
+    if entry is None:
+        return None
+    arr, dev, zc = entry["arr"], entry["dev"], entry["zc"]
+    z = coords[0] * zc
+    if z < 0 or z >= arr.shape[0]:
+        return None
+    if _cp is not None and dev is not None:
+        with _cp.cuda.Device(dev):
+            slab = _cp.asnumpy(arr[z:z + zc])
+    else:
+        slab = np.ascontiguousarray(arr[z:z + zc])
+    odims = (slab.shape[0], slab.shape[1], slab.shape[2])  # no resample at L4+ -> orig=slab
+    return ctx.manager.pack_brick(level, (z, 0, 0, 0), odims, slab)
 
 
 def get_block(block_id: Optional[str]) -> BlockCtx:
     build_blocks()
+    if not _order:
+        raise HTTPException(404, "no brain loaded; select one via /api/brains")
     if block_id is None or block_id == "":
         return _blocks[_order[0]]
     ctx = _blocks.get(block_id)
@@ -233,22 +439,101 @@ async def _throttle(nbytes: int):
         await asyncio.sleep(nbytes / (BANDWIDTH_LIMIT_MBPS * 1e6))
 
 
+# ---------- brain registry (multiple-brain support) ----------
+def _brain_summary(name: str) -> dict:
+    try:
+        b = reg.load_brain(name)
+    except Exception as e:  # noqa
+        return {"name": name, "error": str(e)}
+    blocks = b.get("blocks", [])
+    return {
+        "name": name,
+        "brain": b.get("brain"),
+        "description": b.get("description", ""),
+        "nblocks": len(blocks),
+        "blocks": [blk["id"] for blk in blocks],
+        "has_labels": any(blk.get("label_map") for blk in blocks),
+        "has_local": any(reg.is_local(blk["source"]) for blk in blocks),
+        "active": name == ACTIVE_BRAIN_NAME,
+    }
+
+
+@app.get("/api/brains")
+def brains_list():
+    _ensure_registry_seed()                # default brain is always selectable
+    names = reg.list_brains()
+    return {"active": ACTIVE_BRAIN_NAME, "brains": [_brain_summary(n) for n in names]}
+
+
+@app.get("/api/brains/{name}")
+def brains_get(name: str):
+    if not reg.exists(name):
+        raise HTTPException(404, f"unknown brain {name!r}; have {reg.list_brains()}")
+    return reg.load_brain(name)
+
+
+@app.post("/api/brains/save")
+def brains_save(payload: dict = Body(...)):
+    """Persist a brain definition. With just {'name': ...} (optional 'description'),
+    saves the CURRENT active brain's blocks+transforms under that name. A full
+    definition (with 'blocks') is written verbatim (create/overwrite)."""
+    name = payload.get("name")
+    if not name:
+        raise HTTPException(400, "missing 'name'")
+    if payload.get("blocks"):
+        brain_def = payload
+    elif ACTIVE_BRAIN is not None:
+        brain_def = {**ACTIVE_BRAIN, "name": name}
+        if payload.get("description"):
+            brain_def["description"] = payload["description"]
+    else:
+        raise HTTPException(400, "no active brain to save; pass a full definition "
+                                 "with 'blocks' or activate a brain first")
+    saved = reg.save_brain(brain_def)
+    return {"saved": saved, "summary": _brain_summary(saved)}
+
+
+@app.post("/api/brains/{name}/activate")
+def brains_activate(name: str):
+    """Hot-swap the active brain: tear down current blocks, rebuild from `name`,
+    and re-warm normalization + ROI cache in the background. No restart."""
+    if not reg.exists(name):
+        raise HTTPException(404, f"unknown brain {name!r}; have {reg.list_brains()}")
+    brain = reg.load_brain(name)
+    _teardown_blocks()
+    _set_active_brain(brain, name)
+    build_blocks(force=True)
+    threading.Thread(target=_warm_active, daemon=True).start()
+    threading.Thread(target=_prewarm_roi, daemon=True).start()
+    return {"active": ACTIVE_BRAIN_NAME, "blocks": _order,
+            "summary": _brain_summary(name)}
+
+
 @app.on_event("startup")
 def _startup():
     # build every block's manager + GPU context now so /health is accurate and
     # the first client request doesn't pay CUDA init / metadata latency.
-    build_blocks()
-    # compute each block's gray-intensity window (for glass normalization) and
-    # prewarm the ROI viewer's default panels -- both in the background (idle
-    # DGX work) so the first client request isn't blocked.
-    threading.Thread(target=_compute_norm_windows, daemon=True).start()
-    threading.Thread(target=_prewarm_roi, daemon=True).start()
+    _ensure_registry_seed()              # make the default brain selectable
+    _activate_initial()                  # activate --brain/--zarr target, else none
+    if _order:
+        threading.Thread(target=_warm_active, daemon=True).start()
+        threading.Thread(target=_prewarm_roi, daemon=True).start()
+
+
+def _warm_active() -> None:
+    """Background warmup for the active brain: glass normalization windows FIRST
+    (the resident glass build needs them), then the VRAM-resident L4 cache."""
+    _compute_norm_windows()
+    _build_resident()
+
+
+_NO_CACHE = {"Cache-Control": "no-store, must-revalidate"}   # dev UI: always serve fresh HTML
 
 
 @app.get("/")
 def client():
     if os.path.exists(CLIENT_HTML):
-        return FileResponse(CLIENT_HTML)
+        return FileResponse(CLIENT_HTML, headers=_NO_CACHE)
     return JSONResponse({"error": "client/volume.html not built yet",
                          "hint": "use the API directly; see docs/protocol.md"}, status_code=404)
 
@@ -259,7 +544,7 @@ DASHBOARD_HTML = os.path.normpath(os.path.join(HERE, "..", "client", "index.html
 @app.get("/dashboard")
 def dashboard():
     if os.path.exists(DASHBOARD_HTML):
-        return FileResponse(DASHBOARD_HTML)
+        return FileResponse(DASHBOARD_HTML, headers=_NO_CACHE)
     return JSONResponse({"error": "client/index.html missing"}, status_code=404)
 
 
@@ -300,6 +585,7 @@ def _block_info_dict(ctx: BlockCtx) -> dict:
             for l in info.levels
         ],
         "baseline_chunks": s.baseline_chunks(),   # whole coarsest level (load first)
+        "has_labels": ctx.label_map is not None,   # per-block segmentation overlay available
         "attrs": info.attrs,
     }
 
@@ -308,11 +594,16 @@ def _block_info_dict(ctx: BlockCtx) -> dict:
 def dataset_info():
     build_blocks()
     blocks = [_block_info_dict(_blocks[bid]) for bid in _order]
+    brain = ACTIVE_BRAIN or {}
     # top-level convenience mirror of the first block keeps single-block clients
     # working; multi-block clients read `blocks`.
     first = dict(blocks[0]) if blocks else {}
     first.pop("block_id", None)
-    return {"blocks": blocks, **first}
+    return {"blocks": blocks,
+            "brain": ACTIVE_BRAIN_NAME,
+            "rgb": bool(brain.get("rgb")),          # RGB fused volume -> client colour DVR
+            "has_labels": any(b["has_labels"] for b in blocks),
+            **first}
 
 
 @app.post("/api/view", response_model=ViewResponse)
@@ -373,19 +664,77 @@ def prefetch(body: ChunkRequestBody, block: str = Query(None)):
 @app.get("/api/chunk/{chunk_id}")
 async def get_chunk(chunk_id: str, channels: str = Query("0,1,2,3"),
                     block: str = Query(None), glass: int = Query(0)):
-    m = get_block(block).manager
+    ctx = get_block(block)
+    m = ctx.manager
     try:
         lvl, coords = m.source.parse_chunk_id(chunk_id)
     except Exception:
         raise HTTPException(400, f"bad chunk_id {chunk_id}")
     ch_list = [int(x) for x in channels.split(",") if x != ""]
-    cd = m.get(lvl, coords)
-    payload = m.serialize(cd, ch_list, glass=bool(glass) and GLASS)
+    payload = _serve_resident(ctx, lvl, coords)        # VRAM slice if L4+ is resident
+    status = "resident"
+    if payload is None:
+        cd = m.get(lvl, coords)
+        payload = m.serialize(cd, ch_list, glass=bool(glass) and GLASS)
+        status = "empty" if cd.source_bytes == 0 else "ready"
+    await _throttle(len(payload))
+    return Response(content=payload, media_type="application/octet-stream",
+                    headers={"X-Chunk-Id": chunk_id, "X-Chunk-Status": status,
+                             "Cache-Control": "no-store"})
+
+
+@app.get("/api/label_chunk/{chunk_id}")
+async def get_label_chunk(chunk_id: str, block: str = Query(None)):
+    """Serve the segmentation brick aligned with /api/chunk's intensity brick:
+    single-channel BVX2 (nch=1) of region ids, NEVER resampled (max_xy=0 on the
+    label manager) so ids stay crisp. Same chunk_id / coords as the intensity."""
+    ctx = get_block(block)
+    if ctx.label_manager is None:
+        raise HTTPException(404, f"block {ctx.block_id!r} has no label map")
+    lm = ctx.label_manager
+    try:
+        lvl, coords = lm.source.parse_chunk_id(chunk_id)
+    except Exception:
+        raise HTTPException(400, f"bad chunk_id {chunk_id}")
+    cd = lm.get(lvl, coords)
+    payload = lm.serialize(cd, [0])        # single label channel, no glass, no resample
     await _throttle(len(payload))
     return Response(content=payload, media_type="application/octet-stream",
                     headers={"X-Chunk-Id": chunk_id, "X-Chunk-Status":
                              "empty" if cd.source_bytes == 0 else "ready",
                              "Cache-Control": "no-store"})
+
+
+_LUT_CACHE: "Dict[str, list]" = {}
+
+
+def _load_lut(path: str) -> list:
+    """Region id -> {id,name,color[r,g,b]} from a manifest.json (cached)."""
+    if path in _LUT_CACHE:
+        return _LUT_CACHE[path]
+    out = []
+    try:
+        with open(path) as f:
+            man = json.load(f)
+        for r in man.get("regions", []):
+            out.append({"id": int(r["id"]), "name": r.get("name", ""),
+                        "color": r.get("color", [255, 255, 255])})
+    except Exception as e:  # noqa
+        print(f"[labels] LUT load failed ({path}): {e}")
+    _LUT_CACHE[path] = out
+    return out
+
+
+@app.get("/api/labels/lut")
+def labels_lut(block: str = Query(None)):
+    """Region colour LUT for a block's label map (from its manifest.json)."""
+    ctx = get_block(block)
+    if not ctx.label_map:
+        raise HTTPException(404, f"block {ctx.block_id!r} has no label map")
+    lut_path = ctx.label_map.get("lut")
+    regions = _load_lut(lut_path) if lut_path else []
+    return {"block": ctx.block_id, "name": ctx.label_map.get("name"),
+            "count": len(regions), "regions": regions}
 
 
 @app.get("/api/stats")
@@ -409,7 +758,7 @@ ROI_HTML = os.path.normpath(os.path.join(HERE, "..", "client", "roi585.html"))
 @app.get("/roi")
 def roi_page():
     if os.path.exists(ROI_HTML):
-        return FileResponse(ROI_HTML)
+        return FileResponse(ROI_HTML, headers=_NO_CACHE)
     return JSONResponse({"error": "client/roi585.html missing"}, status_code=404)
 
 
@@ -475,7 +824,7 @@ def transforms_get(brain: str = Query(None)):
     out, brains = {}, {}
     for bid, ctx in _blocks.items():
         m = BLOCK_META.get(bid)
-        if not m or "omeToRas" not in m:
+        if not m or not m.get("omeToRas"):     # no anatomical affine (e.g. single-block brains)
             continue
         if brain and m.get("brain") != brain:
             continue
@@ -627,11 +976,10 @@ def _compute_norm_windows():
     in the reassembled brain. We sample each block's coarsest level once, take a
     robust (p2,p98) window of channel 0, and hand it to the manager; serialize()
     then maps that window to 0..255 so every block shares one brightness range."""
-    if not GLASS:
-        return
+    if not GLASS or (ACTIVE_BRAIN or {}).get("rgb"):
+        return                               # RGB brains don't use the gray glass window
     build_blocks()
-    for bid in _order:
-        ctx = _blocks[bid]
+    for bid, ctx in list(_blocks.items()):   # snapshot: a hot-swap may rebuild _blocks
         try:
             info = ctx.source.get_metadata()
             lvl = info.coarsest_level
@@ -649,6 +997,8 @@ def _prewarm_roi():
     """Background: fill the ROI cache for the viewer's default panels so the
     first page load is instant. Uses the otherwise-idle DGX + parallel access."""
     build_blocks()
+    if not _order:
+        return
     ctx = _blocks.get("585") or _blocks[_order[0]]
     for size in (2048,):
         for mode in ("region",):
@@ -672,8 +1022,9 @@ if __name__ == "__main__":
                          "Omit to use the built-in 5-block set.")
     ap.add_argument("--host", default="0.0.0.0")
     ap.add_argument("--port", type=int, default=8010)
-    ap.add_argument("--min-level", type=int, default=3,
-                    help="finest level the DGX will stream (0=full res, huge)")
+    ap.add_argument("--min-level", type=int, default=4,
+                    help="finest level the DGX will stream (0=full res, huge). "
+                         "Keep >= --resident-level so served bricks come from VRAM.")
     ap.add_argument("--delay-ms", type=float, default=0.0)
     ap.add_argument("--bandwidth-limit", type=float, default=0.0,
                     help="MB/s cap for chunk payloads (0=unlimited)")
@@ -682,12 +1033,19 @@ if __name__ == "__main__":
     ap.add_argument("--gpu", dest="gpu", action="store_true", default=True,
                     help="use A100 GPU processing (default on, falls back to CPU)")
     ap.add_argument("--no-gpu", dest="gpu", action="store_false")
-    ap.add_argument("--gpu-max-xy", type=int, default=512,
+    ap.add_argument("--gpu-max-xy", type=int, default=1500,
                     help="server-side resample cap so brick textures stay uniform (0=off)")
+    ap.add_argument("--resident-level", type=int, default=4,
+                    help="hold this level + coarser fully in A100 VRAM and serve by "
+                         "slicing (finest resident = finest served; 0 = off)")
     ap.add_argument("--glass", dest="glass", action="store_true", default=True,
                     help="Nissl see-through preprocessing: per-block gray "
                          "normalization + precomputed gradient channel (default on)")
     ap.add_argument("--no-glass", dest="glass", action="store_false")
+    ap.add_argument("--brain", default="",
+                    help="initial active brain to load at startup (registry name); "
+                         "default empty = load NO brain (pick one in the viewer / via "
+                         "?brain=<name> in the URL). --zarr implies bootstrapping one.")
     ap.add_argument("--prefetch-top", type=int, default=8,
                     help="warm N top-priority chunks on each /view (0=off)")
     ap.add_argument("--voxel-um", default="20,0.5,0.5",
@@ -713,6 +1071,8 @@ if __name__ == "__main__":
 
     import app_zarr as _self  # type: ignore
     _self.ZARR_ROOTS = roots
+    _self.INITIAL_BRAIN = args.brain
+    _self.FORCE_BOOTSTRAP = bool(args.zarr)     # explicit --zarr -> rebuild brain from roots
     _self.MIN_LEVEL = args.min_level
     _self.DELAY_MS = args.delay_ms
     _self.BANDWIDTH_LIMIT_MBPS = args.bandwidth_limit
@@ -720,6 +1080,7 @@ if __name__ == "__main__":
     _self.WORKERS = args.workers
     _self.USE_GPU = args.gpu
     _self.GPU_MAX_XY = args.gpu_max_xy
+    _self.RESIDENT_LEVEL = args.resident_level
     _self.GLASS = args.glass
     _self.PREFETCH_TOP = args.prefetch_top
     _self.VOXEL_UM_FINEST = voxel_um
@@ -729,6 +1090,7 @@ if __name__ == "__main__":
         print(f"[dgx-zarr]   {u}")
     print(f"[dgx-zarr] voxel_um(z,y,x)={voxel_um if voxel_um else 'raw-metadata'}")
     print(f"[dgx-zarr] min_level={args.min_level} workers={args.workers} gpu={args.gpu} "
-          f"gpu_max_xy={args.gpu_max_xy} glass={args.glass} prefetch_top={args.prefetch_top} "
+          f"gpu_max_xy={args.gpu_max_xy} resident_level={args.resident_level} "
+          f"glass={args.glass} prefetch_top={args.prefetch_top} "
           f"delay={args.delay_ms}ms bw={args.bandwidth_limit}MB/s cache={args.cache_mb}MB")
     uvicorn.run(_self.app, host=args.host, port=args.port, log_level="info")

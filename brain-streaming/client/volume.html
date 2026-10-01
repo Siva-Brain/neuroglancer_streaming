@@ -12,6 +12,8 @@
   #hud { position:fixed; top:10px; left:10px; width:230px; padding:10px 12px;
          background:rgba(10,14,22,.82); border:1px solid #223049; border-radius:9px;
          backdrop-filter:blur(6px); pointer-events:none; white-space:pre; }
+  /* HUD is click-through for camera orbit, but the brain selector must be clickable */
+  #hud #brainSel { pointer-events:auto; cursor:pointer; }
   #hud h1 { font-size:11px; margin:0 0 7px; color:#8fb4ff; letter-spacing:.4px; }
   .r{display:flex;justify-content:space-between}.k{color:#8794ab}.v{color:#eaf1ff}
   hr{border:0;border-top:1px solid #223049;margin:6px 0}
@@ -76,6 +78,7 @@
   <h1>DGX BRAIN VOLUME</h1>
   <div class="r"><span class="k">Connection</span><span class="v" id="conn"><span class="dot wait"></span>…</span></div>
   <div class="r"><span class="k">Server</span><span class="v" id="server">—</span></div>
+  <div class="r"><span class="k">Brain</span><span class="v"><select id="brainSel" style="font:inherit;color:#eaf1ff;background:#16233a;border:1px solid #2c405e;border-radius:4px;max-width:150px;"></select></span></div>
   <hr>
   <div class="r"><span class="k">Blocks</span><span class="v" id="nblk">0</span></div>
   <div class="r"><span class="k">Network</span><span class="v" id="mbps">0.0 MB/s</span></div>
@@ -127,6 +130,11 @@
     <div class="vrow"><label>lighting</label><input id="vLight" type="range" min="0" max="1" step="0.02"><span class="val" id="lLight"></span></div>
     <div class="vrow"><label>quality</label><input id="vQual" type="range" min="32" max="256" step="16"><span class="val" id="lQual"></span></div>
     <div class="vrow chk"><input id="vJitter" type="checkbox"><label for="vJitter">smooth (ray jitter)</label></div>
+    <div id="labelRow" style="display:none;flex-direction:column;gap:4px">
+      <div class="glabel">labels</div>
+      <div class="vrow chk"><input id="vLabels" type="checkbox"><label for="vLabels">region overlay</label></div>
+      <div class="vrow"><label>opacity</label><input id="vLabelA" type="range" min="0" max="1" step="0.02"><span class="val" id="lLabelA"></span></div>
+    </div>
   </div>
 </div>
 
@@ -173,12 +181,23 @@ uniform float uJitter;     // 0/1 dithered ray start
 uniform vec3 uTexel;       // 1/dims of THIS brick, for gradient central differences
 uniform int uHasGrad;      // 1 = brick has a server-precomputed gradient channel (.b)
 uniform float uEdge;       // structure/edge emphasis from precomputed gradient 0..1
+uniform int uRGB;          // 1 = brick is a true-colour RGB fused volume (.rgb = colour)
+uniform highp sampler3D uLabelVol;   // region ids (R8, NEAREST) aligned to this brick
+uniform sampler2D uLut;              // 256x1 RGBA region-colour LUT (id 0 = none)
+uniform int uLabelOn;                // 1 = overlay labels for THIS brick
+uniform float uLabelAlpha;           // overlay tint strength 0..1
 vec2 hitBox01(vec3 o, vec3 d){
   vec3 inv=1.0/d; vec3 t0=(vec3(0.0)-o)*inv, t1=(vec3(1.0)-o)*inv;
   vec3 tn=min(t0,t1), tf=max(t0,t1);
   return vec2(max(max(tn.x,tn.y),tn.z), min(min(tf.x,tf.y),tf.z));
 }
-float raw(vec3 p){ vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r); }   // density*tissue
+float raw(vec3 p){                                       // scalar density for the TF
+  if(uRGB==1){ vec3 c=texture(uVol,p).rgb;               // RGB fused (white bg, black = no data)
+    float mx=max(max(c.r,c.g),c.b);
+    if(mx<0.04) return 0.0;                              // empty/no-data (black) -> transparent
+    return 1.0-mx; }                                     // white bg -> ~0, darker tissue -> opaque
+  vec2 s=texture(uVol,p).rg; return s.g*(1.0-s.r);       // Nissl: mask * (1-gray)
+}
 float tf(float v){ return clamp((v-(uWL-uWW*0.5))/max(uWW,1e-4),0.0,1.0); }
 vec3 grad(vec3 p){ return vec3(
   raw(p+vec3(uTexel.x,0,0))-raw(p-vec3(uTexel.x,0,0)),
@@ -207,11 +226,17 @@ void main(){
     if(uHasGrad==1) a*=1.0+uEdge*3.0*ge;                  // gradient-opacity: emphasise structure
     a=clamp(a,0.0,1.0);
     vec3 col;
-    if(uColorMode==1)      col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
+    if(uRGB==1)            col=texture(uVol,p).rgb;                            // true fused colour
+    else if(uColorMode==1) col=mix(vec3(0.55,0.62,0.78),vec3(0.98),v)*uTint;   // per-block hue
     else if(uColorMode==2) col=cmap(v);                                        // colormap
     else                   col=vec3(0.06+0.94*v);                              // grayscale
     if(uHasGrad==1 && uEdge>0.0)                          // structural shading from stored |grad|
       col*=mix(1.0, 0.55+1.4*ge, uEdge);
+    if(uLabelOn==1){                                      // region segmentation overlay
+      int id=int(texture(uLabelVol,p).r*255.0+0.5);
+      if(id>0){ vec4 lc=texelFetch(uLut,ivec2(id,0),0);
+        col=mix(col, lc.rgb, uLabelAlpha*lc.a); }
+    }
     if(uLight>0.0){ vec3 g=grad(p); float gm=length(g);   // optional live directional shading
       vec3 n=gm>1e-4?-g/gm:vec3(0.0); float diff=max(dot(n,-d),0.0);
       col*=mix(1.0,0.25+0.85*diff,uLight*clamp(gm*8.0,0.0,1.0)); }
@@ -233,26 +258,35 @@ const loc = {vp:U("uViewProj"),model:U("uModel"),camL:U("uCamLocal"),tint:U("uTi
              vol:U("uVol"),alpha:U("uAlpha"),steps:U("uSteps"),
              colorMode:U("uColorMode"),cmap:U("uCmap"),wl:U("uWL"),ww:U("uWW"),
              thresh:U("uThresh"),light:U("uLight"),jitter:U("uJitter"),texel:U("uTexel"),
-             hasGrad:U("uHasGrad"),edge:U("uEdge")};
+             hasGrad:U("uHasGrad"),edge:U("uEdge"),rgb:U("uRGB"),
+             labelVol:U("uLabelVol"),lut:U("uLut"),labelOn:U("uLabelOn"),labelAlpha:U("uLabelAlpha")};
 
 // ---------- global visualization params (control panel) ----------
 // v2 defaults are tuned for the Nissl glass/see-through look (server glass on):
 // wide window + low floor keeps the soft cloud, gradient "structure" emphasis
 // (seam-free, from the precomputed channel) etches the internal architecture.
-const VIZ_KEY="brain-viz-v2";
-const viz = {
-  colorMode:2,   // 0 grayscale, 1 per-block tint, 2 colormap (bone, like the ROI cloud)
-  cmap:0,        // bone/gray/hot/viridis (colormap mode)
-  wl:0.30, ww:0.90,   // contrast window level/width (wide = soft ramp)
-  thresh:0.04,   // density floor (low = keep the cloud, not just dense laminae)
-  density:0.5,   // -> uAlpha
-  quality:160,   // -> uSteps (high = no slice banding)
-  light:0.0,     // live directional shading (off: can seam at brick borders)
-  edge:0.6,      // structure emphasis from the precomputed gradient (seam-free)
-  jitter:true,
+const VIZ_KEY="brain-viz-v2", VIZ_KEY_RGB="brain-viz-rgb-v1";
+// Nissl gray+mask glass bricks: wide window + gradient structure etching
+const NISSL_DEFAULTS = {
+  colorMode:2, cmap:0, wl:0.30, ww:0.90, thresh:0.04, density:0.5,
+  quality:160, light:0.0, edge:0.6, jitter:true, labelAlpha:0.55,
 };
+// RGB fused volumes (white background, near-white tissue): see-through preset so
+// thick tissue reads as glass instead of a solid white blob. density = 1-brightness
+// so tissue is faint; keep opacity low and cut the near-white haze with threshold.
+const RGB_DEFAULTS = {
+  colorMode:2, cmap:0, wl:0.13, ww:0.20, thresh:0.05, density:0.3,
+  quality:160, light:0.0, edge:0.0, jitter:true, labelAlpha:0.55,
+};
+const viz = {...NISSL_DEFAULTS};
 try{ const s=JSON.parse(localStorage.getItem(VIZ_KEY)||"null"); if(s) Object.assign(viz,s); }catch(e){}
-function saveViz(){ try{ localStorage.setItem(VIZ_KEY,JSON.stringify(viz)); }catch(e){} }
+function saveViz(){ try{ localStorage.setItem(S.rgb?VIZ_KEY_RGB:VIZ_KEY,JSON.stringify(viz)); }catch(e){} }
+// pick the profile for the active brain's mode, then apply any saved tweaks for it
+function applyVizProfile(){
+  Object.assign(viz, S.rgb ? RGB_DEFAULTS : NISSL_DEFAULTS);
+  try{ const s=JSON.parse(localStorage.getItem(S.rgb?VIZ_KEY_RGB:VIZ_KEY)||"null"); if(s) Object.assign(viz,s); }catch(e){}
+  syncViz();
+}
 
 // unit cube [0,1]^3 (triangles)
 const cube = new Float32Array([
@@ -345,6 +379,36 @@ function upload3D(b){
   else              gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8, b.dx,b.dy,b.dz,0,gl.RG, gl.UNSIGNED_BYTE,b.vox);
   return tex;
 }
+// label brick -> R8 NEAREST (region ids must not interpolate across boundaries)
+function upload3DLabel(b){
+  const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D,t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  for(const pn of ["TEXTURE_MIN_FILTER","TEXTURE_MAG_FILTER"]) gl.texParameteri(gl.TEXTURE_3D,gl[pn],gl.NEAREST);
+  for(const pn of ["TEXTURE_WRAP_S","TEXTURE_WRAP_T","TEXTURE_WRAP_R"]) gl.texParameteri(gl.TEXTURE_3D,gl[pn],gl.CLAMP_TO_EDGE);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,b.dx,b.dy,b.dz,0,gl.RED,gl.UNSIGNED_BYTE,b.vox);
+  return t;
+}
+// 256x1 RGBA region-colour LUT (index = region id; id 0 = transparent)
+function buildLutTexture(regions){
+  const data=new Uint8Array(256*4);
+  for(const r of (regions||[])){ const id=r.id&255, c=r.color||[255,255,255];
+    data[id*4]=c[0]; data[id*4+1]=c[1]; data[id*4+2]=c[2]; data[id*4+3]=255; }
+  const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  for(const pn of ["TEXTURE_MIN_FILTER","TEXTURE_MAG_FILTER"]) gl.texParameteri(gl.TEXTURE_2D,gl[pn],gl.NEAREST);
+  for(const pn of ["TEXTURE_WRAP_S","TEXTURE_WRAP_T"]) gl.texParameteri(gl.TEXTURE_2D,gl[pn],gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,256,1,0,gl.RGBA,gl.UNSIGNED_BYTE,data);
+  return t;
+}
+// 1-voxel placeholder so the uLabelVol sampler is always bound (even unlabeled bricks)
+const dummyLabelTex=(function(){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_3D,t);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texImage3D(gl.TEXTURE_3D,0,gl.R8,1,1,1,0,gl.RED,gl.UNSIGNED_BYTE,new Uint8Array([0])); return t; })();
+const dummyLut=(function(){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,1,1,0,gl.RGBA,gl.UNSIGNED_BYTE,new Uint8Array([0,0,0,0])); return t; })();
 
 // ---------- cache / global pump ----------
 function enqueue(blk,zi,level,prio){
@@ -377,19 +441,28 @@ async function fetchBrick(blk,zi,level,k,gk){
   S.inflight.add(gk); S.requested++;
   const cid=`L${level}.${zi}.0.0.0`;
   try{
-    const res=await fetch(`${API}/api/chunk/${cid}?channels=${CHANNELS}&glass=${GLASS}&block=${blk.id}`);
-    const buf=await res.arrayBuffer();
-    S.received++; S.bytes+=buf.byteLength; S.bytesWin+=buf.byteLength; blk.have.add(k);
+    const iurl=`${API}/api/chunk/${cid}?channels=${S.channels||CHANNELS}&glass=${S.glassFlag??GLASS}&block=${blk.id}`;
+    const reqs=[fetch(iurl).then(r=>r.arrayBuffer())];
+    if(S.hasLabels) reqs.push(fetch(`${API}/api/label_chunk/${cid}?block=${blk.id}`)
+                                .then(r=>r.arrayBuffer()).catch(()=>null));
+    const [buf,lbuf]=await Promise.all(reqs);
+    S.received++; S.bytes+=buf.byteLength+(lbuf?lbuf.byteLength:0);
+    S.bytesWin+=buf.byteLength+(lbuf?lbuf.byteLength:0); blk.have.add(k);
     const b=parseBrick(buf);
-    if(b.nch>=3) S.hasGrad=true;                        // server is sending the gradient channel
+    if(!S.rgb && b.nch>=3) S.hasGrad=true;              // glass gradient channel (NOT rgb's blue)
     const cur=blk.bricks.get(zi);
     if(cur && cur.level<=b.level){ /* finer already present */ }
     else{
       const bmin=b.bmin, bmax=b.bmax;                  // block-local mm (BVX2)
       if(cur && cur.tex) gl.deleteTexture(cur.tex);
-      blk.bricks.set(zi,{level:b.level,tex:upload3D(b),bmin,bmax,dx:b.dx,dy:b.dy,dz:b.dz,
+      if(cur && cur.labelTex) gl.deleteTexture(cur.labelTex);
+      blk.bricks.set(zi,{level:b.level,tex:upload3D(b),bmin,bmax,dx:b.dx,dy:b.dy,dz:b.dz,labelTex:null,
                          center:[(bmin[0]+bmax[0])/2,(bmin[1]+bmax[1])/2,(bmin[2]+bmax[2])/2]});
     }
+    if(lbuf){ const entry=blk.bricks.get(zi);          // attach aligned label texture
+      if(entry){ const lb=parseBrick(lbuf);
+        if(entry.labelTex) gl.deleteTexture(entry.labelTex);
+        entry.labelTex=upload3DLabel(lb); } }
   }catch(e){ console.warn("brick",blk.id,k,e.message); }
   finally{ S.inflight.delete(gk); pump(); }
 }
@@ -483,6 +556,9 @@ function draw(now){
   gl.uniform1f(loc.wl,viz.wl); gl.uniform1f(loc.ww,viz.ww); gl.uniform1f(loc.thresh,viz.thresh);
   gl.uniform1f(loc.light,viz.light); gl.uniform1f(loc.jitter,viz.jitter?1:0);
   gl.uniform1i(loc.hasGrad,S.hasGrad?1:0); gl.uniform1f(loc.edge,viz.edge);
+  gl.uniform1i(loc.rgb,S.rgb?1:0);
+  gl.uniform1i(loc.labelVol,1); gl.uniform1i(loc.lut,2); gl.uniform1f(loc.labelAlpha,viz.labelAlpha);
+  gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, S.lutTex||dummyLut);
   gl.activeTexture(gl.TEXTURE0);
 
   // collect every visible brick with its world model, sort back-to-front
@@ -507,7 +583,9 @@ function draw(now){
     gl.uniform3fv(loc.camL,cl);
     gl.uniform3fv(loc.tint,blk.tint);
     gl.uniform3f(loc.texel,1/Math.max(1,b.dx),1/Math.max(1,b.dy),1/Math.max(1,b.dz));
-    gl.bindTexture(gl.TEXTURE_3D,b.tex);
+    gl.uniform1i(loc.labelOn,(S.labelsOn && S.hasLabels && b.labelTex)?1:0);
+    gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, b.labelTex||dummyLabelTex);
+    gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_3D,b.tex);
     gl.drawArrays(gl.TRIANGLES,0,36);
   }
 
@@ -644,6 +722,8 @@ function syncViz(){
   set("vLight",viz.light); $("lLight").textContent=viz.light.toFixed(2);
   set("vQual",viz.quality); $("lQual").textContent=viz.quality;
   set("vCmap",viz.cmap); $("vJitter").checked=viz.jitter;
+  set("vLabelA",viz.labelAlpha); $("lLabelA").textContent=viz.labelAlpha.toFixed(2);
+  $("vLabels").checked=(S.labelsOn!==false);
   [...document.querySelectorAll("#vColorMode button")].forEach(b=>b.classList.toggle("on",+b.dataset.cm===viz.colorMode));
   $("vCmapRow").style.display = viz.colorMode===2 ? "flex" : "none";
 }
@@ -652,6 +732,8 @@ function bindViz(id,key,parse=parseFloat){ const e=$(id); if(!e)return;
 bindViz("vWL","wl"); bindViz("vWW","ww"); bindViz("vThresh","thresh");
 bindViz("vDensity","density"); bindViz("vEdge","edge"); bindViz("vLight","light");
 bindViz("vQual","quality",v=>parseInt(v,10));
+bindViz("vLabelA","labelAlpha");
+$("vLabels").addEventListener("change",()=>{ S.labelsOn=$("vLabels").checked; });
 $("vCmap").addEventListener("change",()=>{ viz.cmap=+$("vCmap").value; saveViz(); });
 $("vJitter").addEventListener("change",()=>{ viz.jitter=$("vJitter").checked; saveViz(); });
 [...document.querySelectorAll("#vColorMode button")].forEach(b=>
@@ -660,11 +742,80 @@ $("vizTitle").addEventListener("click",()=>{ const p=$("viz"),c=p.classList.togg
   $("vizTitle").querySelector(".caret").textContent=c?"▸":"▾"; });
 syncViz();
 
-// ---------- boot ----------
-(async function(){
+// ---------- brain registry (multiple-brain support) ----------
+async function populateBrains(tries=5){
+  for(let i=0;i<tries;i++){
+    try{
+      const r=await (await fetch(`${API}/api/brains`)).json();
+      const sel=$("brainSel"); sel.innerHTML="";
+      const ph=document.createElement("option");        // placeholder: no brain loaded
+      ph.value=""; ph.textContent="— select brain —"; sel.appendChild(ph);
+      (r.brains||[]).forEach(b=>{
+        const o=document.createElement("option");
+        o.value=b.name;
+        o.textContent=`${b.name} (${b.nblocks}${b.has_labels?" +lbl":""})`;
+        if(b.name===r.active) o.selected=true;
+        sel.appendChild(o);
+      });
+      if(!r.active) sel.value="";
+      return;                                            // success
+    }catch(e){
+      console.warn(`brains list attempt ${i+1} failed`,e);
+      await new Promise(res=>setTimeout(res,800));       // server may be (re)starting
+    }
+  }
+  console.error("brains list failed after retries");
+}
+// activate `name` (or clear if empty), reflect it in the URL (?brain=), and reload
+async function switchBrain(name){
+  if(!name){ clearBlocks(); S.hasLabels=false; buildPanel();
+    const u=new URL(location); u.searchParams.delete("brain"); history.replaceState(null,"",u);
+    $("conn").innerHTML='<span class="dot wait"></span>no brain selected'; return; }
+  $("conn").innerHTML='<span class="dot wait"></span>loading…';
+  try{
+    await fetch(`${API}/api/brains/${encodeURIComponent(name)}/activate`,{method:"POST"});
+    const u=new URL(location); u.searchParams.set("brain",name); history.replaceState(null,"",u);
+    await loadBrain();                       // rebuild blocks for the new brain
+  }catch(err){ console.error("brain switch failed",err);
+    $("conn").innerHTML='<span class="dot bad"></span>switch failed'; }
+}
+$("brainSel").addEventListener("change",e=>switchBrain(e.target.value));
+
+// tear down the current blocks (GL textures + state) before (re)loading a brain
+function clearBlocks(){
+  for(const blk of S.blocks.values())
+    for(const b of blk.bricks.values()){ if(b.tex) gl.deleteTexture(b.tex); if(b.labelTex) gl.deleteTexture(b.labelTex); }
+  if(S.lutTex){ gl.deleteTexture(S.lutTex); S.lutTex=null; }
+  S.blocks.clear(); S.order.length=0; S.inflight.clear();
+  S.requested=0; S.received=0; S.bytes=0; S.hasGrad=false;
+}
+
+// ---------- boot / (re)load active brain ----------
+async function loadBrain(){
   $("server").textContent=location.host;
   try{
+    clearBlocks();
     const [info, xf] = await Promise.all([getInfo(), getTransforms()]);
+    if(!info.brain || !(info.blocks && info.blocks.length)){   // no brain loaded yet
+      $("conn").innerHTML='<span class="dot wait"></span>no brain selected';
+      $("labelRow").style.display="none"; S.hasLabels=false; buildPanel();
+      return;
+    }
+    // per-brain render mode: RGB fused volume vs Nissl gray+mask glass bricks
+    S.rgb = !!info.rgb;
+    S.channels = S.rgb ? "0,1,2" : "0,3";
+    S.glassFlag = S.rgb ? 0 : 1;
+    applyVizProfile();                     // RGB vs Nissl viz preset for this brain
+    // region label overlay: build the colour LUT for the labelled block
+    S.hasLabels = !!info.has_labels;
+    if(S.labelsOn===undefined) S.labelsOn=true;
+    if(S.hasLabels){
+      const lb=(info.blocks.find(b=>b.has_labels)||info.blocks[0]).block_id;
+      try{ const lut=await (await fetch(`${API}/api/labels/lut?block=${lb}`)).json();
+        S.lutTex=buildLutTexture(lut.regions); S.labelRegions=lut.regions; }
+      catch(e){ console.warn("label LUT failed",e); S.hasLabels=false; }
+    }
+    $("labelRow").style.display = S.hasLabels ? "flex" : "none";
     const blockInfos = info.blocks || [ {block_id:"0", ...info} ];  // single-block fallback
     const saved=loadSaved();
     const ngAll = (xf && xf.transforms) || {};
@@ -708,6 +859,13 @@ syncViz();
     }
     pump();
   }catch(e){ $("conn").innerHTML='<span class="dot bad"></span>OFFLINE'; console.error(e); }
+}
+
+(async function boot(){
+  await populateBrains();
+  const urlBrain=new URLSearchParams(location.search).get("brain");
+  if(urlBrain){ $("brainSel").value=urlBrain; await switchBrain(urlBrain); }
+  else await loadBrain();                    // shows server's active brain, or "none" by default
   requestAnimationFrame(draw);
 })();
 </script>

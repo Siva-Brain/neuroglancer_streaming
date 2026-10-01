@@ -1,0 +1,19 @@
+{
+  "name": "Brain_585_single",
+  "brain": "Stroke_1",
+  "space": "RAS-mm",
+  "description": "single-block test",
+  "blocks": [
+    {
+      "id": "585",
+      "source": "http://3dstrokeviewer.humanbrain.in:8056/zarr_files/585_ALL_3d.zarr",
+      "voxel_um": [
+        20.0,
+        8.0,
+        8.0
+      ],
+      "omeToRas": null,
+      "label_map": null
+    }
+  ]
+}
