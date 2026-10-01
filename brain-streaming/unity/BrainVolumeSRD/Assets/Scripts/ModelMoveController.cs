@@ -159,6 +159,7 @@ public class ModelMoveController : MonoBehaviour
     {
         var mouse = Mouse.current;
         if (mouse == null) return;
+        if (BrainVolume.TimelineTransportUI.PointerCaptured) return;   // the pointer is on the timeline seek bar
 
         if (scrollZoomEnabled)
         {

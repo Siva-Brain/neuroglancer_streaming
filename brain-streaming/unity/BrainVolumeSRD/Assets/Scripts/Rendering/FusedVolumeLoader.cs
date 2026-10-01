@@ -80,6 +80,8 @@ namespace BrainVolume
         public bool sliceSweeping = false;
         [Tooltip("+1 = slicing in (cutting away), -1 = slicing back (restoring). Flipped by each C press.")]
         public int sliceDirection = -1;
+        [Tooltip("C / V / [ ] slicing keys. Turned off by a timeline (NeuronalLossSequence) that owns the slice.")]
+        public bool sliceKeysEnabled = true;
 
         [Header("Labels (region segmentation, optional)")]
         [Tooltip("Base name of the aligned label export, e.g. hb02_L7_labels. Empty = no labels.")]
@@ -95,6 +97,17 @@ namespace BrainVolume
         public Texture2D LutTex { get; private set; }
         public Vector3 SizeMm { get; private set; }     // (x, y, z) mm
         public bool Loaded => Texture != null;
+
+        /// <summary>Unit cube (drawn space, before _Flip) -> world. Valid once Loaded.</summary>
+        public Matrix4x4 UnitCubeToWorld => transform.localToWorldMatrix * _local;
+
+        /// <summary>Optional box (unit-cube coords) carved out of the volume, e.g. where a
+        /// core of overlay data is shown. Off while holeMin >= holeMax on any axis.</summary>
+        [HideInInspector] public Vector3 holeMin, holeMax;
+
+        /// <summary>Raised right after the volume is drawn for a camera, so overlays drawn
+        /// in the handler always composite on top of it (both shaders ignore depth).</summary>
+        public event System.Action<Camera> Drawn;
 
         Mesh _cube;
         Matrix4x4 _local;                           // unit cube -> this transform's local space
@@ -270,7 +283,7 @@ namespace BrainVolume
         void Update()
         {
             var kb = Keyboard.current;
-            if (kb != null)
+            if (kb != null && sliceKeysEnabled)
             {
                 // C alternates: slice in -> slice back -> slice in ... Pressing it mid-sweep
                 // reverses from wherever the cut currently is.
@@ -325,9 +338,12 @@ namespace BrainVolume
             material.SetInt("_LabelMask", (hasLabels && maskToLabels) ? 1 : 0);
             material.SetInt("_LabelColor", (hasLabels && colorRegions && LutTex != null) ? 1 : 0);
             material.SetFloat("_LabelAlpha", labelOpacity);
+            material.SetVector("_HoleMin", holeMin);
+            material.SetVector("_HoleMax", holeMax);
 
             material.SetPass(0);
-            Graphics.DrawMeshNow(_cube, transform.localToWorldMatrix * _local);
+            Graphics.DrawMeshNow(_cube, UnitCubeToWorld);
+            Drawn?.Invoke(Camera.current);
         }
 
         void OnDestroy()

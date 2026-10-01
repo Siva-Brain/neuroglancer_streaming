@@ -1,0 +1,28 @@
+{
+  "width": 48,
+  "height": 48,
+  "depth": 117,
+  "format": "RG16",
+  "channels": {
+    "r": "neuronal_loss_roi_smooth (tissue)",
+    "g": "neuronal_loss_inverse_roi (neuronal signal, pink)"
+  },
+  "filled_slices_smooth": [
+    0
+  ],
+  "filled_slices_inverse": [
+    0,
+    4,
+    28,
+    42,
+    52,
+    56,
+    66,
+    105,
+    116
+  ],
+  "source": [
+    "neuronal_loss_roi_smooth_133-181_81-129.npy",
+    "neuronal_loss_inverse_roi_133-181_81-129.npy"
+  ]
+}

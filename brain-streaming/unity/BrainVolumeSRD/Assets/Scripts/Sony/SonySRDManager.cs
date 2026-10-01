@@ -1,4 +1,5 @@
 using UnityEngine;
+using SRD.Core;
 
 namespace BrainVolume
 {
@@ -41,7 +42,7 @@ namespace BrainVolume
             if (mode != BrainDisplayMode.SonyElfSr2) return new NullSRDAdapter();
 #if SONY_SRD_SDK
             var mgr = srDisplayManagerObject != null
-                ? srDisplayManagerObject.GetComponent<SRD.Core.SRDManager>() : null;
+                ? srDisplayManagerObject.GetComponent<SRDManager>() : null;
             if (mgr != null) return new SonySRDAdapter(mgr);
             Debug.LogWarning("[SonySRD] SRDisplayManager not assigned; using normal monitor.");
 #endif

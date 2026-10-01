@@ -33,6 +33,8 @@ Shader "Brain/FusedRaymarch"
         _Flip ("Flip axes (x,y,z = 1 to mirror)", Vector) = (0, 0, 0, 0)
         _ClipMin ("Clip box min (unit cube)", Vector) = (0, 0, 0, 0)
         _ClipMax ("Clip box max (unit cube)", Vector) = (1, 1, 1, 0)
+        _HoleMin ("Carved-out box min (unit cube)", Vector) = (0, 0, 0, 0)
+        _HoleMax ("Carved-out box max (unit cube, <= min = off)", Vector) = (0, 0, 0, 0)
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull", Float) = 1  // 1 = Front
         [NoScaleOffset] _LabelTex ("Label ids (R8)", 3D) = "black" {}
         [NoScaleOffset] _Lut ("Region LUT (256x1)", 2D) = "black" {}
@@ -60,6 +62,7 @@ Shader "Brain/FusedRaymarch"
             float _SatLow, _SatHigh, _EmptyCut, _Density, _Gamma, _Brightness, _Shade, _Jitter, _Steps;
             float4 _TexSize, _Flip;
             float4 _ClipMin, _ClipMax;   // visible sub-box of the unit cube (slicing)
+            float4 _HoleMin, _HoleMax;   // box carved out of the volume (overlay core); off if empty
             sampler3D _LabelTex;
             sampler2D _Lut;
             float _LabelAlpha;
@@ -121,9 +124,11 @@ Shader "Brain/FusedRaymarch"
                 float3 h = 1.0 / max(_TexSize.xyz, 1.0);   // one voxel in texture space
 
                 float3 outC = 0.0; float outA = 0.0;
+                bool hole = all(_HoleMax.xyz > _HoleMin.xyz);
                 [loop] for (int s = 0; s < N; s++)
                 {
                     float3 p = camObj + d * (t0 + s * dt);
+                    if (hole && all(p >= _HoleMin.xyz) && all(p <= _HoleMax.xyz)) continue;
                     float3 q = lerp(p, 1.0 - p, _Flip.xyz);
                     // region label (NEAREST) -- mask out non-tissue (background/fusion slabs)
                     float lid = tex3Dlod(_LabelTex, float4(q, 0)).r;   // id/255
