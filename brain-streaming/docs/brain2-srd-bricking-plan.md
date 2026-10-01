@@ -79,8 +79,13 @@ for a sharper base if VRAM headroom allows.) Total disk to copy to the SRD box
   samples only the core via the apron transform (`_TexScale`/`_TexOffset`), draws
   back-to-front. Data contract validated end-to-end (mult-of-4 dims, byte sizes,
   contiguous tiling). Based on the working `FusedRaymarch`.
-- **P3 — LOD streaming** screen-space LOD + frustum cull + background brick load +
-  LRU VRAM cache (~14 GB, L3 pinned) → L0 on zoom.
+- **P3 — LOD streaming** *(written, needs in-Unity test)* `Assets/Scripts/SRD/
+  BrickStreamer.cs`: screen-space LOD (voxel≈`targetPixels`), frustum cull, threaded
+  file read + throttled main-thread Texture3D upload, LRU VRAM cache
+  (`vramBudgetMB`, base level pinned). Overlap/holes avoided by drawing exactly ONE
+  level/frame — the finest whose visible bricks are all resident (base = fallback
+  while finer bricks stream). Reuses `SRDBrickRaymarch.shader`. P2's
+  `BrickVolumeLoader` stays for single-level use.
 - **P4 — polish** apron seams, empty-space skip, SRD per-view perf (steps, native
   per-view res), Linear colour check.
 
