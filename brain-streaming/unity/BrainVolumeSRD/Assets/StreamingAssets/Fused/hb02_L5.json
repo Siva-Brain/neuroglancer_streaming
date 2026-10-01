@@ -1,0 +1,20 @@
+{
+  "width": 708,
+  "height": 388,
+  "depth": 485,
+  "channels": 3,
+  "format": "RGB24",
+  "colorMode": "rgb-white-background",
+  "level": 5,
+  "voxelSizeMM": [
+    0.256,
+    0.256,
+    0.32000000000000006
+  ],
+  "sizeMM": [
+    181.248,
+    99.328,
+    155.20000000000002
+  ],
+  "source": "/home/users/azhar/projectM/viewer_data/fused_8um/hb02_fused.zarr"
+}

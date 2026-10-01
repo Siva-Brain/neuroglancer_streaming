@@ -30,15 +30,31 @@ from datasource.local_zarr import LocalZarrBrainSource  # noqa: E402
 from datasource.http_zarr import HttpZarrBrainSource     # noqa: E402
 
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_ZARR = "/home/users/azhar/projectM/viewer_data/fused_8um/hb02_fused.zarr"
+DEFAULT_OUT = os.path.normpath(os.path.join(
+    HERE, "..", "..", "unity", "BrainVolumeSRD", "Assets", "StreamingAssets", "Fused"))
+
+
 def main():
+    import re
     ap = argparse.ArgumentParser()
-    ap.add_argument("--zarr", required=True, help="path (local) or http:// URL of the .zarr")
     ap.add_argument("--level", type=int, required=True, help="pyramid level to export (e.g. 7)")
-    ap.add_argument("--out", required=True, help="output directory (Unity StreamingAssets/Fused)")
-    ap.add_argument("--name", required=True, help="base name, e.g. hb02_L7 -> <name>.raw/.json")
+    ap.add_argument("--zarr", default=DEFAULT_ZARR,
+                    help=f"path (local) or http:// URL of the .zarr (default: {DEFAULT_ZARR})")
+    ap.add_argument("--out", default=DEFAULT_OUT,
+                    help=f"output directory (default: the Unity StreamingAssets/Fused)")
+    ap.add_argument("--name", default=None,
+                    help="base name -> <name>.raw/.json (default: <zarr-prefix>_L<level>, e.g. hb02_L6)")
     ap.add_argument("--channels", default="0,1,2",
                     help="source channels to pack as RGB (default 0,1,2)")
     args = ap.parse_args()
+
+    if not args.name:
+        stem = os.path.basename(args.zarr.rstrip("/")).replace(".zarr", "")
+        m = re.match(r"[A-Za-z0-9]+", stem)
+        prefix = m.group(0) if m else "vol"
+        args.name = f"{prefix}_L{args.level}"
 
     is_http = args.zarr.lower().startswith(("http://", "https://"))
     src = (HttpZarrBrainSource(args.zarr) if is_http
