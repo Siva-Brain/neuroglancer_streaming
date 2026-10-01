@@ -73,8 +73,12 @@ for a sharper base if VRAM headroom allows.) Total disk to copy to the SRD box
   parallel pool), XY padded to mult-of-4, white-departure alpha, `tex_format` +
   `stored`/`core`/`apron` in the index; validated via BC3 decode round-trip.
   `--format bc3|raw` (bc7 stub), `--bc-level`, `--jobs`.
-- **P2 — brick loader (Unity)** load the L3 brick set, place by index, raymarch
-  the whole brain on the SRD (reuse `BrainBlockRaymarch.shader` as the model).
+- **P2 — brick loader (Unity)** *(done)* `Assets/Scripts/SRD/BrickVolumeLoader.cs` +
+  `Rendering/SRDBrickRaymarch.shader`: reads `index.json`, uploads each brick to a
+  Texture3D (BC3/BC7/RGBA32/RGB24 per `tex_format`), places by core `bbox_mm`,
+  samples only the core via the apron transform (`_TexScale`/`_TexOffset`), draws
+  back-to-front. Data contract validated end-to-end (mult-of-4 dims, byte sizes,
+  contiguous tiling). Based on the working `FusedRaymarch`.
 - **P3 — LOD streaming** screen-space LOD + frustum cull + background brick load +
   LRU VRAM cache (~14 GB, L3 pinned) → L0 on zoom.
 - **P4 — polish** apron seams, empty-space skip, SRD per-view perf (steps, native
