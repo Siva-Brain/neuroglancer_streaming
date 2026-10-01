@@ -76,7 +76,7 @@
   <span id="saved">saved ✓</span>
   <span id="conn" class="st">connecting…</span>
 </div>
-<div id="hint">LEFT · pick center: drag crosshair on a slice · scroll = through-plane slice · release to fetch &nbsp;|&nbsp; RIGHT · L0·L2·L4·L7: drag = rotate all · scroll = zoom all (synced)</div>
+<div id="hint">LEFT · pick center: drag crosshair on a slice · scroll = through-plane slice · release to fetch &nbsp;|&nbsp; RIGHT · L3·L2·L1 cuboids + L0 colour tile: drag = rotate all · scroll = zoom all (synced)</div>
 
 <div id="panel">
   <h4 id="pTitle">visualization <span class="caret">▾</span></h4>
@@ -121,7 +121,9 @@
 const {mat4, vec3} = glMatrix;
 const API = location.origin;
 const BLOCK = "585";
-const LEVELS = [0, 2, 4, 7];       // the four ROI-display panels (right pane)
+const LEVELS = [0, 1, 2, 3];       // the four ROI-display panels (right pane)
+const TILE_LEVEL = 0;              // finest panel: a single flat RGB tile (not a cube)
+const TILE_SIZE = 512;             // tile side in L0 voxels (one colour tile)
 const BROWSE_LEVEL = 4;            // "L4 as volume": level browsed in the picker
 const BROWSE_SIZE = 100000000;     // huge -> server clamps to the whole slab
 
@@ -132,7 +134,8 @@ if(!gl){ document.getElementById("conn").textContent="NO WEBGL2"; }
 // ---- normalized ROI center in the slab plane (0.5,0.5 = geometric middle) ----
 // fx,fy drive the fetch; fz is only the through-plane slice shown in the picker.
 let fx = 0.5, fy = 0.5, fz = 0.5;
-let lastFx = 0.5, lastFy = 0.5;    // last center actually fetched
+let lastFx = 0.5, lastFy = 0.5, lastFz = 0.5;   // last center / plane actually fetched
+let planeDirty = false;            // through-plane (fz) moved -> reload the colour tile
 
 // ---- render parameters (driven by the control panel) ----
 // opacity/quality mirror the top-bar sliders; the rest are the new controls.
@@ -226,6 +229,7 @@ precision highp float; precision highp sampler3D;
 in vec2 vUv; out vec4 frag;
 uniform sampler3D uVol; uniform int uAxis; uniform float uSlice; uniform int uReady;
 uniform float uWL,uWW;                       // shared window/level (same as volume)
+uniform int uRGB;                            // 0 gray+mask (RG8) ; 1 fused colour (RGB8)
 void main(){
   if(uReady==0){ frag=vec4(0.02,0.03,0.05,1.0); return; }
   float u=vUv.x, w=1.0-vUv.y;               // screen top -> plane origin
@@ -233,6 +237,7 @@ void main(){
   if(uAxis==0)      p=vec3(u, w, uSlice);    // axial   XY
   else if(uAxis==1) p=vec3(u, uSlice, w);    // coronal XZ
   else              p=vec3(uSlice, u, w);    // sagittal YZ
+  if(uRGB==1){ frag=vec4(texture(uVol,p).rgb, 1.0); return; }   // colour tile, shown as-is
   vec2 s=texture(uVol,p).rg; float tis=1.0-s.r; float dn=s.g*tis;
   float g=clamp((dn-(uWL-uWW*0.5))/max(uWW,1e-4), 0.0, 1.0);
   frag=vec4(vec3(g),1.0); }`;
@@ -254,7 +259,21 @@ const L={vp:gl.getUniformLocation(prog,"uViewProj"),model:gl.getUniformLocation(
 const sprog=link(SVERT,SFRAG);
 const SL={vol:gl.getUniformLocation(sprog,"uVol"),axis:gl.getUniformLocation(sprog,"uAxis"),
   slice:gl.getUniformLocation(sprog,"uSlice"),ready:gl.getUniformLocation(sprog,"uReady"),
+  rgb:gl.getUniformLocation(sprog,"uRGB"),
   wl:gl.getUniformLocation(sprog,"uWL"),ww:gl.getUniformLocation(sprog,"uWW")};
+
+// ---- flat 2D colour-tile program (finest panel) ----
+// The L0 tile is a genuine 2D RGB image fetched from the server; draw it
+// directly on a screen quad (no 3D texture / raymarch), so colours are exact.
+const TFRAG=`#version 300 es
+precision highp float; in vec2 vUv; out vec4 frag;
+uniform sampler2D uTex; uniform int uReady;
+void main(){
+  if(uReady==0){ frag=vec4(0.02,0.03,0.05,1.0); return; }
+  vec4 c=texture(uTex, vec2(vUv.x, 1.0-vUv.y));   // row 0 at screen top
+  frag=vec4(c.rgb, c.a); }`;                       // a = tissue mask (drops background)
+const tprog=link(SVERT,TFRAG);
+const TL={tex:gl.getUniformLocation(tprog,"uTex"),ready:gl.getUniformLocation(tprog,"uReady")};
 
 // unit cube for raymarch
 const cube=new Float32Array([
@@ -290,10 +309,10 @@ const views = [
   {pane:"L",g:1,kind:"slice",axis:1,name:"coronal"},
   {pane:"L",g:2,kind:"slice",axis:2,name:"sagittal"},
   {pane:"L",g:3,kind:"vol",  src:"picker",name:"L"+BROWSE_LEVEL+" volume"},
-  {pane:"R",g:0,kind:"vol",  level:0},
+  {pane:"R",g:0,kind:"vol",  level:3},
   {pane:"R",g:1,kind:"vol",  level:2},
-  {pane:"R",g:2,kind:"vol",  level:4},
-  {pane:"R",g:3,kind:"vol",  level:7},
+  {pane:"R",g:2,kind:"vol",  level:1},
+  {pane:"R",g:3,kind:"tile", level:0},   // finest: single flat RGB tile, not a cube
 ];
 
 // css-pixel rect (top-down) of a view
@@ -321,7 +340,32 @@ function upload(b){
   gl.texParameteri(gl.TEXTURE_3D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
   for(const p of [gl.TEXTURE_WRAP_S,gl.TEXTURE_WRAP_T,gl.TEXTURE_WRAP_R])
     gl.texParameteri(gl.TEXTURE_3D,p,gl.CLAMP_TO_EDGE);
-  gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8,b.dx,b.dy,b.dz,0,gl.RG,gl.UNSIGNED_BYTE,b.vox);
+  if(b.nch>=3) gl.texImage3D(gl.TEXTURE_3D,0,gl.RGB8,b.dx,b.dy,b.dz,0,gl.RGB,gl.UNSIGNED_BYTE,b.vox);
+  else         gl.texImage3D(gl.TEXTURE_3D,0,gl.RG8, b.dx,b.dy,b.dz,0,gl.RG, gl.UNSIGNED_BYTE,b.vox);
+  return t;
+}
+// upload a flat image tile (dz==1) as a 2D texture, drawn directly (no raymarch).
+// Expanded to RGBA8 on the CPU: 3-byte RGB8 uploads dropped G/B in some GL stacks,
+// and RGBA8 is the universally safe/renderable/filterable format.
+function uploadTile2D(b){
+  const n=b.dx*b.dy, s=b.nch, rgba=new Uint8Array(n*4);
+  if(s>=4){                                   // R,G,B + tissue mask -> colour, mask as alpha
+    for(let i=0;i<n;i++){ const j=i*s,k=i*4;
+      rgba[k]=b.vox[j]; rgba[k+1]=b.vox[j+1]; rgba[k+2]=b.vox[j+2]; rgba[k+3]=b.vox[j+3]; }
+  }else if(s===3){                             // colour only -> opaque
+    for(let i=0;i<n;i++){ const j=i*s,k=i*4;
+      rgba[k]=b.vox[j]; rgba[k+1]=b.vox[j+1]; rgba[k+2]=b.vox[j+2]; rgba[k+3]=255; }
+  }else{                                       // gray+mask fallback -> gray, mask as alpha
+    for(let i=0;i<n;i++){ const g=b.vox[i*s], k=i*4;
+      rgba[k]=g; rgba[k+1]=g; rgba[k+2]=g; rgba[k+3]=s>=2?b.vox[i*s+1]:255; }
+  }
+  const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT,1);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA8,b.dx,b.dy,0,gl.RGBA,gl.UNSIGNED_BYTE,rgba);
   return t;
 }
 // Camera distance so the box's bounding sphere fully fits the pane at ANY
@@ -368,6 +412,11 @@ function updateOverlay(){
     } else if(v.src==="picker"){
       tagEl[i].innerHTML=`<b>${v.name}</b>  ${picker.status==="ready"
         ? `<span class="ok">${picker.dx}×${picker.dy}×${picker.dz}</span>` : `<span class="st">${picker.status}</span>`}`;
+    } else if(v.kind==="tile"){
+      const c2=roi[v.level];
+      const st = c2.status==="ready" ? `<span class="ok">${c2.dims}</span>`
+               : `<span class="st">${c2.status}</span>`;
+      tagEl[i].innerHTML=`<div><b>L${v.level} colour tile</b>  ${c2.um}\n${st}</div>`;
     } else {
       const c2=roi[v.level];
       const st = c2.status==="ready" ? `<span class="ok">${c2.dims} · ${c2.mm}</span>`
@@ -420,7 +469,7 @@ canvas.addEventListener("wheel",e=>{
   e.preventDefault();
   if(v.kind==="slice"){                              // scroll = move through-plane slice
     const step=Math.sign(e.deltaY)*0.02;
-    if(v.axis===0) fz=Math.min(1,Math.max(0,fz+step));
+    if(v.axis===0){ fz=Math.min(1,Math.max(0,fz+step)); planeDirty=true; }  // -> reload colour tile
     else if(v.axis===1){ fy=Math.min(1,Math.max(0,fy+step)); centerDirty=true; }
     else { fx=Math.min(1,Math.max(0,fx+step)); centerDirty=true; }
     scheduleCommit();                                // debounce -> fetch after scrolling stops
@@ -436,9 +485,12 @@ let commitTimer=null;
 function scheduleCommit(){ clearTimeout(commitTimer); commitTimer=setTimeout(commitCenter,250); }
 function commitCenter(){
   clearTimeout(commitTimer);
-  if(!centerDirty) return;
-  if(Math.abs(fx-lastFx)<1e-4 && Math.abs(fy-lastFy)<1e-4){ centerDirty=false; return; }
-  centerDirty=false; loadRoi(); saveSettings();
+  const movedCenter = centerDirty &&
+    (Math.abs(fx-lastFx)>1e-4 || Math.abs(fy-lastFy)>1e-4);
+  const movedPlane = planeDirty && Math.abs(fz-lastFz)>1e-4;
+  centerDirty=false; planeDirty=false;
+  if(movedCenter){ loadRoi(); saveSettings(); }        // full reload (all panels + tile)
+  else if(movedPlane){ reloadTile(); saveSettings(); } // just the colour tile follows fz
 }
 
 // ---------- draw ----------
@@ -478,8 +530,20 @@ function drawSlice(v){
   gl.uniform1i(SL.axis,v.axis);
   gl.uniform1f(SL.slice, v.axis===0?fz : v.axis===1?fy : fx);
   gl.uniform1i(SL.ready, (picker.status==="ready"&&picker.tex)?1:0);
+  gl.uniform1i(SL.rgb, 0);                              // picker slices are gray+mask
   gl.uniform1f(SL.wl,params.wl); gl.uniform1f(SL.ww,params.ww);
   if(picker.tex) gl.bindTexture(gl.TEXTURE_3D,picker.tex);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+// The finest panel is a single flat COLOUR tile (dz=1 RGB volume) drawn on a
+// full-pane quad via the slice shader's axial branch — not a raymarched cube.
+function drawTile(v){
+  const c=roi[TILE_LEVEL];
+  gl.useProgram(tprog); gl.bindVertexArray(quadVao);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);  // mask alpha
+  gl.uniform1i(TL.tex,0); gl.activeTexture(gl.TEXTURE0);
+  gl.uniform1i(TL.ready, (c&&c.status==="ready"&&c.tex)?1:0);
+  if(c&&c.tex) gl.bindTexture(gl.TEXTURE_2D,c.tex);
   gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 }
 function draw(){
@@ -491,6 +555,7 @@ function draw(){
     gl.viewport(vx,vy,r.w,r.h); gl.scissor(vx,vy,r.w,r.h);
     gl.clearColor(0.02,0.03,0.05,1); gl.clear(gl.COLOR_BUFFER_BIT);
     if(v.kind==="slice") drawSlice(v);
+    else if(v.kind==="tile") drawTile(v);
     else if(v.src==="picker") drawVolume(picker, pickerCam, r);
     else drawVolume(roi[v.level], roiCam, r);
   });
@@ -533,20 +598,42 @@ async function loadRoi(){
     c.um=`${l.xy_voxel_um>=1?l.xy_voxel_um.toFixed(0):l.xy_voxel_um.toFixed(2)}µm`;
   });
   conn.className="ok"; conn.textContent="loading…";
+  lastFz=fz;
   for(const lv of [...LEVELS].sort((a,b)=>b-a)){   // coarse -> fine
     if(myGen!==roiGen) return;
     const c=roi[lv]; c.status="loading…";
     try{
-      const url=`${API}/api/roi?block=${BLOCK}&level=${lv}&size=${size}&mode=${mode}`
-               +`&fx=${fx.toFixed(4)}&fy=${fy.toFixed(4)}`;
-      const buf=await (await fetch(url)).arrayBuffer();
+      const buf=await (await fetch(lv===TILE_LEVEL ? tileUrl() :
+        `${API}/api/roi?block=${BLOCK}&level=${lv}&size=${size}&mode=${mode}`
+        +`&fx=${fx.toFixed(4)}&fy=${fy.toFixed(4)}`)).arrayBuffer();
       if(myGen!==roiGen) return;
-      const b=parse(buf); c.tex=upload(b); c.bmin=b.bmin; c.bmax=b.bmax;
-      c.nx=b.dx; c.ny=b.dy; c.nz=b.dz;
-      c.dims=`${b.dx}×${b.dy}×${b.dz}`; c.status="ready";
+      const b=parse(buf); if(c.tex) gl.deleteTexture(c.tex);
+      c.tex = lv===TILE_LEVEL ? uploadTile2D(b) : upload(b);
+      c.bmin=b.bmin; c.bmax=b.bmax; c.nx=b.dx; c.ny=b.dy; c.nz=b.dz;
+      c.dims = lv===TILE_LEVEL ? `${b.dx}×${b.dy} tile` : `${b.dx}×${b.dy}×${b.dz}`;
+      c.status="ready";
     }catch(e){ c.status="error"; console.error("L"+lv,e); }
   }
   if(myGen===roiGen) conn.textContent="ready";
+}
+
+// finest panel: one full-res COLOUR z-slice tile at the picked centre + plane.
+function tileUrl(){
+  return `${API}/api/roi?block=${BLOCK}&level=${TILE_LEVEL}&size=${TILE_SIZE}`
+       + `&mode=voxel&cap=${TILE_SIZE}&rgb=1&flat=1`
+       + `&fx=${fx.toFixed(4)}&fy=${fy.toFixed(4)}&fz=${fz.toFixed(4)}`;
+}
+// reload ONLY the colour tile (cheap) when the through-plane slice (fz) changes;
+// the L1/L2/L3 cuboids are full-z, so they don't depend on fz.
+async function reloadTile(){
+  const c=roi[TILE_LEVEL]; if(!c) return;
+  const myGen=++roiGen; lastFz=fz;
+  try{
+    const buf=await (await fetch(tileUrl())).arrayBuffer();
+    if(myGen!==roiGen) return;
+    const b=parse(buf); if(c.tex) gl.deleteTexture(c.tex); c.tex=uploadTile2D(b);
+    c.nx=b.dx; c.ny=b.dy; c.nz=b.dz; c.dims=`${b.dx}×${b.dy} tile`; c.status="ready";
+  }catch(e){ console.error("tile",e); }
 }
 
 // ---------- settings: browser-remembered, backend-defaulted ----------
@@ -584,7 +671,7 @@ function applySettings(s){                     // partial-safe: only sets presen
     if(r.jitter!=null) params.jitter=!!r.jitter;
   }
   if(s.center){ fx=numOr(s.center.fx,fx); fy=numOr(s.center.fy,fy); fz=numOr(s.center.fz,fz);
-                lastFx=fx; lastFy=fy; }
+                lastFx=fx; lastFy=fy; lastFz=fz; }
   if(s.roiView){ roiCam.yaw=numOr(s.roiView.yaw,roiCam.yaw); roiCam.pitch=numOr(s.roiView.pitch,roiCam.pitch);
                  roiCam.zoom=numOr(s.roiView.zoom,roiCam.zoom); }
   if(s.pickerView){ pickerCam.yaw=numOr(s.pickerView.yaw,pickerCam.yaw); pickerCam.pitch=numOr(s.pickerView.pitch,pickerCam.pitch);

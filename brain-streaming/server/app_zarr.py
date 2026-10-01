@@ -537,23 +537,30 @@ def roi_info(block: str = Query("585"), size: int = Query(2048),
 async def roi(block: str = Query("585"), level: int = Query(...),
               size: int = Query(2048), cap: int = Query(256),
               mode: str = Query("region"),
-              fx: float = Query(0.5), fy: float = Query(0.5)):
-    """Cuboid (full-z) of `block` at `level`, channels [0,3],
-    GPU-downsampled so max axis <= cap. Returns BVX2.
+              fx: float = Query(0.5), fy: float = Query(0.5),
+              fz: float = Query(0.5),
+              rgb: int = Query(0), flat: int = Query(0)):
+    """Cuboid (full-z) of `block` at `level`, GPU-downsampled so max axis <= cap.
+    Returns BVX2.
     mode 'region' -> `size` is L0 voxels (same physical box across levels);
     mode 'voxel'  -> `size` is this level's voxels (same voxel count per level).
     fx/fy in [0,1] place the ROI center within the slab plane (0.5,0.5 = middle);
-    the box is clamped so it stays fully inside the slab."""
+    the box is clamped so it stays fully inside the slab.
+    rgb=1  -> colour channels [0,1,2] (nch=3) instead of gray+mask [0,3] (nch=2).
+    flat=1 -> a SINGLE z-slice (dz=1) at fz in [0,1] instead of the full-z cuboid
+              (used for the finest 'single tile' panel)."""
     ctx = get_block(block)
-    fx = min(1.0, max(0.0, fx)); fy = min(1.0, max(0.0, fy))
-    ckey = (ctx.block_id, level, size, mode, cap, round(fx, 4), round(fy, 4))
+    fx = min(1.0, max(0.0, fx)); fy = min(1.0, max(0.0, fy)); fz = min(1.0, max(0.0, fz))
+    ckey = (ctx.block_id, level, size, mode, cap, round(fx, 4), round(fy, 4),
+            round(fz, 4) if flat else None, bool(rgb), bool(flat))
     cached = _roi_cache_get(ckey)
     if cached is not None:
         await _throttle(len(cached))
         return Response(content=cached, media_type="application/octet-stream",
                         headers={"X-Roi-Level": str(level), "X-Roi-Cache": "hit",
                                  "Cache-Control": "no-store"})
-    payload = _build_roi_payload(ctx, level, size, mode, cap, fx, fy)
+    payload = _build_roi_payload(ctx, level, size, mode, cap, fx, fy,
+                                 rgb=bool(rgb), flat=bool(flat), fz=fz)
     _roi_cache_put(ckey, payload)
     await _throttle(len(payload))
     return Response(content=payload, media_type="application/octet-stream",
@@ -562,10 +569,13 @@ async def roi(block: str = Query("585"), level: int = Query(...),
 
 
 def _build_roi_payload(ctx: BlockCtx, level: int, size: int, mode: str, cap: int,
-                       fx: float = 0.5, fy: float = 0.5) -> bytes:
-    """Fetch + downsample an ROI cuboid and pack it as BVX2 (sync).
+                       fx: float = 0.5, fy: float = 0.5,
+                       rgb: bool = False, flat: bool = False, fz: float = 0.5) -> bytes:
+    """Fetch + downsample an ROI and pack it as BVX2 (sync).
     fx/fy in [0,1] locate the box center in the slab plane; clamped so the
-    box stays inside the slab (fx=fy=0.5 -> geometric center, the default)."""
+    box stays inside the slab (fx=fy=0.5 -> geometric center, the default).
+    rgb  -> colour channels [0,1,2] (nch=3) instead of gray+mask [0,3] (nch=2).
+    flat -> a single z-slice (dz=1) at fz instead of the full-z cuboid."""
     global _roi_gpu_rr
     src = ctx.source
     li = src.level_info(level)
@@ -578,20 +588,30 @@ def _build_roi_payload(ctx: BlockCtx, level: int, size: int, mode: str, cap: int
     y0, y1 = max(0, cy - half), min(sy, cy + half)
     x0, x1 = max(0, cx - half), min(sx, cx + half)
 
-    arr = src.get_roi(level, 0, sz, y0, y1, x0, x1, channels=[0, 3], workers=ROI_WORKERS)
+    # rgb -> all channels (R,G,B + tissue mask) so the client can use the mask as
+    # alpha; gray+mask (the cuboids) stays the compact 2-channel [0,3].
+    channels = [0, 1, 2, 3] if rgb else [0, 3]
+    if flat:                                          # a single z-slice at fz
+        zc = min(max(int(round(fz * sz)), 0), sz - 1)
+        z0, z1 = zc, zc + 1
+    else:
+        z0, z1 = 0, sz
+
+    arr = src.get_roi(level, z0, z1, y0, y1, x0, x1, channels=channels, workers=ROI_WORKERS)
     # GPU downsample x/y to cap, round-robined across the 8 A100s; z strided.
     if _gpu is not None and max(arr.shape[1], arr.shape[2]) > cap:
         dev = _roi_gpu_rr; _roi_gpu_rr += 1
         arr = np.ascontiguousarray(_gpu.resample_xy_max(arr, cap, device=dev), dtype=np.uint8)
-    if arr.shape[0] > cap:
+    if not flat and arr.shape[0] > cap:
         arr = np.ascontiguousarray(arr[:: math.ceil(arr.shape[0] / cap)])
 
     dz, dy, dx, nch = arr.shape
     vz, vy, vx, _ = li.voxel_size_m
-    dxmm = (x1 - x0) * vx * 1000.0; dymm = (y1 - y0) * vy * 1000.0; dzmm = sz * vz * 1000.0
+    dxmm = (x1 - x0) * vx * 1000.0; dymm = (y1 - y0) * vy * 1000.0
+    dzmm = (z1 - z0) * vz * 1000.0
     bbox = (-dxmm / 2, -dymm / 2, -dzmm / 2, dxmm / 2, dymm / 2, dzmm / 2)
     header = (b"BVX2" + struct.pack("<BBH", level, nch, 0)
-              + struct.pack("<iii", 0, y0, x0) + struct.pack("<HHH", dz, dy, dx)
+              + struct.pack("<iii", z0, y0, x0) + struct.pack("<HHH", dz, dy, dx)
               + struct.pack("<6f", *bbox))
     return header + np.ascontiguousarray(arr, np.uint8).tobytes()
 
