@@ -556,7 +556,6 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.DualScreenView
   secondCamera: {fileID: 963194227}
   activateSecondDisplay: 1
-  extraTargets: []
 --- !u!4 &976958539
 Transform:
   m_ObjectHideFlags: 0
