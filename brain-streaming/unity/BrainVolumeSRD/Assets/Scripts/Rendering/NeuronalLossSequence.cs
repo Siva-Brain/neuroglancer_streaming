@@ -17,13 +17,16 @@ namespace BrainVolume
     ///   3. "Slice"          slice from the left to clippingDepth                     slice s
     ///   4. "Neuronal loss"  at one point on the cross-section (pointOnCut: the
     ///                       upper-front cortex by default) the histology block
-    ///                       appears tiny, then grows as it heads straight out of
-    ///                       the cut face toward the viewer and curves to the left,
-    ///                       past the brain's FRONT edge (sideDistance), settling
+    ///                       appears tiny, then grows as it travels in a straight
+    ///                       line (straightPath; off = the old curve out of the cut
+    ///                       face and to the left) to its place past the brain's
+    ///                       FRONT edge (sideDistance), settling
     ///                       comeOut in front of the cut face, overshooting slightly,
     ///                       without turning (spinDegreesPerSecond 0);
     ///                       then the label fades in                                  grow s (+ label, hold)
-    /// The brain's transform POSITION (and scale) is never
+    /// With useStartPose the brain is put at startPosition / startRotation / startBrainScale once when
+    /// the timeline starts and the Rotate step turns it the shortest way to the sagittal view.
+    /// Apart from that the brain's transform POSITION (and scale) is never
     /// touched: only its rotation and slice. ModelMoveController is off until the block is in
     /// place (and ignores the mouse while the seek bar is being dragged).
     ///
@@ -53,10 +56,20 @@ namespace BrainVolume
         public Vector2 pointOnCut = new Vector2(0.82f, 0.28f);
 
         [Header("Timeline")]
+        [Tooltip("The brain to drive (a BrickVolumeLoader or FusedVolumeLoader). Empty = the active Brain " +
+                 "(BrickVolumeLoader), else an active FusedVolumeLoader.")]
+        public MonoBehaviour volume;
         public bool playOnStart = true;
         [Tooltip("Add the play/pause + seek bar (TimelineTransportUI) if the scene has none.")]
         public bool transportBar = true;
-        [Tooltip("Rotation the brain starts from (position/scale untouched).")]
+        [Tooltip("ON = the brain starts at startPosition / startRotation / startScale (world space, set once " +
+                 "when the timeline starts) and the Rotate step turns it the shortest way from startRotation to " +
+                 "the left sagittal view (initialEuler X/Z with Y = endY). OFF = the Y-only turn from initialEuler.")]
+        public bool useStartPose = true;
+        public Vector3 startPosition = new Vector3(-0.0225f, 0.53528f, -0.57f);
+        public Quaternion startRotation = new Quaternion(0.52188f, -0.04395f, -0.84894f, 0.07078f);
+        public float startBrainScale = 1.4f;
+        [Tooltip("Rotation the brain starts from when useStartPose is off (position/scale untouched).")]
         public Vector3 initialEuler = new Vector3(0f, 270f, 180f);
         [Tooltip("Euler Y the turn ends on (the left sagittal view). Only Y changes: X and Z stay at initialEuler's.")]
         public float endY = 360f;
@@ -78,7 +91,10 @@ namespace BrainVolume
         [Header("Growth")]
         [Tooltip("Size at the start point, as a fraction of the full size.")]
         [Range(0.01f, 0.5f)] public float startScale = 0.02f;
-        [Tooltip("How far the path first heads straight out of the cut face toward the viewer before it " +
+        [Tooltip("ON = the block travels in a straight line from the point on the cut face to its final place. " +
+                 "OFF = the curved path (arcTowardViewer).")]
+        public bool straightPath = true;
+        [Tooltip("Curved path only: how far the path first heads straight out of the cut face toward the viewer before it " +
                  "curves to the side (Unity units; Bezier control point = start + this toward the viewer).")]
         public float arcTowardViewer = 0.30f;
         [Tooltip("Size overshoot before settling (0 = none, 0.1 = 10 % bigger for a moment).")]
@@ -88,7 +104,7 @@ namespace BrainVolume
 
         [Header("Block")]
         [Tooltip("Length of the block's long axis (the 117-section stack) in Unity units.")]
-        public float blockLength = 0.30f;
+        public float blockLength = 0.20f;
         [Tooltip("Where the block settles, sideways: this far (Unity units) past the brain's FRONT edge (the " +
                  "screen-left side in the left sagittal view), level with the start point.")]
         public float sideDistance = 0.20f;
@@ -195,7 +211,7 @@ namespace BrainVolume
 
         // ------------------------------------------------------------------ state
 
-        FusedVolumeLoader _vol;
+        ISliceableVolume _vol;
         Behaviour _mover;
         SRDManager _srd;
         Material _volMat, _overlayMat;
@@ -224,9 +240,10 @@ namespace BrainVolume
 
         void Start()
         {
-            _vol = FindFirstObjectByType<FusedVolumeLoader>();
-            if (_vol == null) { Debug.LogError("[Loss] No FusedVolumeLoader in the scene."); return; }
-            _mover = _vol.GetComponent("ModelMoveController") as Behaviour;
+            _vol = FindVolume();
+            if (_vol == null) { Debug.LogError("[Loss] No active brain volume (BrickVolumeLoader or FusedVolumeLoader) in the scene."); return; }
+            Debug.Log($"[Loss] Timeline drives '{_vol.transform.name}' ({_vol.GetType().Name}).");
+            _mover = _vol.transform.GetComponent("ModelMoveController") as Behaviour;
             _srd = SRDSceneEnvironment.GetSRDManager();
 
             var vs = Shader.Find("Brain/NeuronalLossVolume");
@@ -243,6 +260,17 @@ namespace BrainVolume
             ComputePhases();
             if (transportBar && FindFirstObjectByType<TimelineTransportUI>() == null)
                 gameObject.AddComponent<TimelineTransportUI>().timeline = this;
+        }
+
+        // The brain the timeline drives: `volume` if set, else the active bricked Brain
+        // (BrickVolumeLoader), else an active FusedVolumeLoader. Inactive objects are ignored, so
+        // a switched-off FusedVolume stays in the scene untouched.
+        ISliceableVolume FindVolume()
+        {
+            if (volume != null && volume.isActiveAndEnabled && volume is ISliceableVolume v) return v;
+            ISliceableVolume found = FindFirstObjectByType<BrainVolume.SRD.BrickVolumeLoader>();
+            if (found == null) found = FindFirstObjectByType<FusedVolumeLoader>();
+            return found;
         }
 
         void ComputePhases()
@@ -275,19 +303,23 @@ namespace BrainVolume
             _start = Quaternion.Euler(initialEuler);
             _turn = endY - initialEuler.y + Mathf.Sign(endY - initialEuler.y == 0f ? 1f : endY - initialEuler.y) * 360f * extraTurns;
             _sagittal = YRot(1f);
+            if (useStartPose)
+            {
+                // the only time the timeline writes the brain's position/scale: the start pose, once
+                Transform tr = _vol.transform;
+                _start = Quaternion.Normalize(startRotation);
+                tr.SetPositionAndRotation(startPosition, _start);
+                tr.localScale = Vector3.one * startBrainScale;
+            }
 
-            _vol.sliceSweeping = false;
-            _vol.sliceKeysEnabled = false;            // the timeline owns the slice
-            _vol.sliceAxis = FusedVolumeLoader.Axis.Z;
+            _vol.SliceKeysEnabled = false;            // the timeline owns the slice
             // cut from whichever end of the left-right axis faces the viewer at the end pose
-            _vol.sliceReverse = Vector3.Dot(_sagittal * Vector3.back, _toViewer) < 0f;
-            _vol.sliceDirection = -1;
-            _vol.holeMin = _vol.holeMax = Vector3.zero;
+            _vol.SliceFromHighZ = Vector3.Dot(_sagittal * Vector3.back, _toViewer) < 0f;
 
             _anchorCut = new Vector3(
                 useRoiCentre ? 0.5f * (roiX0 + roiX1) / roiLevelWidth : pointOnCut.x,
                 useRoiCentre ? 0.5f * (roiY0 + roiY1) / roiLevelHeight : pointOnCut.y,
-                _vol.sliceReverse ? 1f - clippingDepth : clippingDepth);
+                _vol.SliceFromHighZ ? 1f - clippingDepth : clippingDepth);
             FinalPose(out _endPos, out _rootRot);
             BuildTarget();
             _editing = controlsMoveBlock;
@@ -403,11 +435,10 @@ namespace BrainVolume
             if (timeMoved)
             {
                 if (t < _tRotate) tr.rotation = _start;
-                else if (t < _tSlice) tr.rotation = YRot(Ease((t - _tRotate) / rotate));
+                else if (t < _tSlice) tr.rotation = TurnRot(Ease((t - _tRotate) / rotate));
                 else tr.rotation = _sagittal;
 
-                _vol.sliceSweeping = false;
-                _vol.slicePosition = t < _tSlice ? 0f : clippingDepth * Ease((t - _tSlice) / slice);
+                _vol.SlicePosition = t < _tSlice ? 0f : clippingDepth * Ease((t - _tSlice) / slice);
 
                 UpdateControls(t);
             }
@@ -423,8 +454,13 @@ namespace BrainVolume
             // final pose = the target transform (computed place, your own values, or wherever you moved it)
             Quaternion rot = Quaternion.AngleAxis(spin, Vector3.up) * _target.rotation;
             Vector3 startPos = Anchor();
-            Vector3 control = startPos + _toViewer * arcTowardViewer;   // out of the cut face first, then sideways
-            Vector3 pos = Bezier(startPos, control, _target.position, EaseInOutCubic(u));
+            Vector3 pos;
+            if (straightPath) pos = Vector3.Lerp(startPos, _target.position, EaseInOutCubic(u));
+            else
+            {
+                Vector3 control = startPos + _toViewer * arcTowardViewer;   // out of the cut face first, then sideways
+                pos = Bezier(startPos, control, _target.position, EaseInOutCubic(u));
+            }
             float sizeK = Mathf.LerpUnclamped(startScale, 1f, EaseOutBack(u, overshoot));
             Vector3 size = new Vector3(blockLength * width / depth, blockLength * height / depth, blockLength)
                            * _target.localScale.x;
@@ -467,6 +503,11 @@ namespace BrainVolume
         // Euler (x, y0 + k * turn, z): only the Y angle moves.
         Quaternion YRot(float k) =>
             Quaternion.Euler(initialEuler.x, initialEuler.y + _turn * k, initialEuler.z);
+
+        // The Rotate step at k (0..1): the Y-only turn, or with useStartPose the shortest turn from
+        // startRotation to the sagittal pose plus extraTurns full turns about world Y.
+        Quaternion TurnRot(float k) => !useStartPose ? YRot(k) :
+            Quaternion.AngleAxis(360f * extraTurns * k, Vector3.up) * Quaternion.Slerp(_start, _sagittal, k);
 
         Vector3 Anchor() => _vol.UnitCubeToWorld.MultiplyPoint(_anchorCut);   // follows the brain
 
@@ -623,7 +664,7 @@ namespace BrainVolume
 
         void OnDestroy()
         {
-            if (_vol != null) { _vol.Drawn -= Draw; _vol.sliceKeysEnabled = true; }
+            if (_vol != null) { _vol.Drawn -= Draw; _vol.SliceKeysEnabled = true; }
             if (_tex != null) Destroy(_tex);
             if (_volMat != null) Destroy(_volMat);
             if (_overlayMat != null) Destroy(_overlayMat);

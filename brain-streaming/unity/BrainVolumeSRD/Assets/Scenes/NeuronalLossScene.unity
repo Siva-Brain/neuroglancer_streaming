@@ -119,6 +119,94 @@ NavMeshSettings:
     debug:
       m_Flags: 0
   m_NavMeshData: {fileID: 0}
+--- !u!1 &16342190
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 16342193}
+  - component: {fileID: 16342192}
+  - component: {fileID: 16342191}
+  m_Layer: 0
+  m_Name: Brain
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &16342191
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 16342190}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bdfcb8b0567055142b5af61639113695, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::ModelMoveController
+  moveSpeed: 0.25
+  scaleSpeedWithViewSpace: 1
+  enableVertical: 1
+  leftDragTranslates: 1
+  metresPerPixel: 0.0015
+  arrowKeysRotate: 1
+  arrowDegreesPerSecond: 60
+  rightDragRotates: 1
+  degreesPerPixel: 0.25
+  zoomKeysEnabled: 1
+  zoomFactorPerSecond: 1.6
+  scrollZoomEnabled: 1
+  zoomFactorPerNotch: 1.1
+  minZoom: 0.25
+  maxZoom: 4
+  zoomAroundBoundsCenter: 1
+  invertPitch: 0
+  rotateAroundBoundsCenter: 1
+--- !u!114 &16342192
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 16342190}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 84ce54a5c764d6f4284b71d4e0b80cb8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.SRD.BrickVolumeLoader
+  folder: Bricks
+  datasetName: hb02_fused
+  level: 2
+  unitsPerMm: 0.0025
+  material: {fileID: 0}
+  steps: 160
+  density: 0.3
+  windowLow: 0.05
+  windowHigh: 0.5
+  emptyCut: 0.04
+  flipX: 0
+  flipY: 0
+  flipZ: 0
+--- !u!4 &16342193
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 16342190}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.521882176399231, y: -0.04394767805933952, z: -0.8489394187927246, w: 0.07077794522047043}
+  m_LocalPosition: {x: -0.022500034421682359, y: 0.5352774858474731, z: -0.57}
+  m_LocalScale: {x: 1.4, y: 1.4, z: 1.4}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &204734558
 GameObject:
   m_ObjectHideFlags: 0
@@ -871,7 +959,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1836338544
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -910,6 +998,7 @@ MonoBehaviour:
   slicePosition: 0
   sliceSweeping: 0
   sliceDirection: -1
+  sliceKeysEnabled: 1
   labelName: hb02_L4_labels
   maskToLabels: 1
   colorRegions: 1
@@ -971,6 +1060,7 @@ GameObject:
   m_Component:
   - component: {fileID: 2100000002}
   - component: {fileID: 2100000003}
+  - component: {fileID: 2100000004}
   m_Layer: 0
   m_Name: NeuronalLossSequence
   m_TagString: Untagged
@@ -1018,9 +1108,15 @@ MonoBehaviour:
   roiLevelHeight: 194
   useRoiCentre: 0
   pointOnCut: {x: 0.82, y: 0.28}
-  leftIsLowZ: 1
+  volume: {fileID: 16342192}
   playOnStart: 1
+  transportBar: 1
+  useStartPose: 1
+  startPosition: {x: -0.022500034421682359, y: 0.5352774858474731, z: -0.57}
+  startRotation: {x: 0.521882176399231, y: -0.04394767805933952, z: -0.8489394187927246, w: 0.07077794522047043}
+  startBrainScale: 1.4
   initialEuler: {x: 0, y: 270, z: 180}
+  endY: 360
   extraTurns: 0
   showNeuronalLoss: 1
   clippingDepth: 0.3
@@ -1028,18 +1124,24 @@ MonoBehaviour:
   rotate: 4
   slice: 4
   grow: 4
+  labelDelay: 0.2
+  labelSeconds: 0.6
+  hold: 3
   startScale: 0.02
   arcTowardViewer: 0.3
   overshoot: 0.08
   showArrow: 0
-  labelDelay: 0.2
-  labelSeconds: 0.6
-  blockLength: 0.3
+  blockLength: 0.2
   sideDistance: 0.2
   comeOut: 0.3
   pivotYawDegrees: 45
   blockEuler: {x: 0, y: 90, z: 12}
   spinDegreesPerSecond: 0
+  controlsMoveBlock: 1
+  useCustomFinal: 0
+  finalPosition: {x: 0, y: 0, z: 0}
+  finalEuler: {x: 0, y: 0, z: 0}
+  finalScale: 1
   stepCount: 96
   tissueColor: {r: 0.42, g: 0.42, b: 0.45, a: 1}
   tissueThreshold: 0.04
@@ -1065,6 +1167,26 @@ MonoBehaviour:
   tagFontSize: 19
   padding: 18
   labelGap: 0.03
+--- !u!114 &2100000004
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 2100000001}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: b36b0f12e39546db87e586ba305b7558, type: 3}
+  m_Name:
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.TimelineRecorder
+  timeline: {fileID: 2100000003}
+  recordOnPlay: 1
+  width: 1920
+  fps: 30
+  tail: 1.5
+  fallbackFov: 35
+  fallbackDistance: 1.6
+  filePrefix: neuronal_loss
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -1080,3 +1202,4 @@ SceneRoots:
   - {fileID: 1744200002}
   - {fileID: 1836338546}
   - {fileID: 2100000002}
+  - {fileID: 16342193}

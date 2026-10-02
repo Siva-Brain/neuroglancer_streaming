@@ -108,6 +108,8 @@ namespace BrainVolume.SRD
             string indexPath = Path.Combine(dir, "index.json");
             if (!File.Exists(indexPath)) { Debug.LogError("[Stream] Missing " + indexPath); return false; }
             var idx = JsonUtility.FromJson<IndexJson>(File.ReadAllText(indexPath));
+            if (idx.world_extent_mm != null && idx.world_extent_mm.Length == 3)
+                _volLocal = new Vector3(idx.world_extent_mm[0], idx.world_extent_mm[1], idx.world_extent_mm[2]) * unitsPerMm;
             if (idx.levels == null || idx.levels.Length == 0) { Debug.LogError("[Stream] no levels"); return false; }
 
             foreach (var L in idx.levels)
@@ -200,7 +202,7 @@ namespace BrainVolume.SRD
             displayLevel = show;
 
             material.SetFloat("_Steps", steps); material.SetFloat("_Density", density);
-            material.SetFloat("_Low", windowLow); material.SetFloat("_High", windowHigh);
+            material.SetFloat("_RefSteps", 256f);   // SRDBrickRaymarch now uses saturation + defaults (see the shader)
             material.SetFloat("_EmptyCut", emptyCut);
             material.SetVector("_Flip", new Vector4(flipX ? 1 : 0, flipY ? 1 : 0, flipZ ? 1 : 0, 0));
 
@@ -218,12 +220,16 @@ namespace BrainVolume.SRD
                 material.SetTexture("_VolumeTex", _resident[m.key].tex);
                 material.SetVector("_TexScale", m.texScale);
                 material.SetVector("_TexOffset", m.texOffset);
+                material.SetVector("_TexSize", new Vector3(m.dx, m.dy, m.dz));
+                Vector3 core = m.hi - m.lo;
+                material.SetVector("_BrickToVol", new Vector3(core.x / _volLocal.x, core.y / _volLocal.y, core.z / _volLocal.z));
                 material.SetPass(0);
                 Graphics.DrawMeshNow(_cube, l2w * Matrix4x4.TRS(m.lo, Quaternion.identity, m.hi - m.lo));
             }
             drawnBricks = _draw.Count;
         }
         readonly List<Meta> _draw = new List<Meta>(64);
+        Vector3 _volLocal = Vector3.one;            // whole-volume size (local units): SRDBrickRaymarch opacity correction
 
         // ---- loading ----
         void Request(Meta m)

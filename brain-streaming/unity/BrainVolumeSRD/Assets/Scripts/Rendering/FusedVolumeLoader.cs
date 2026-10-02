@@ -24,7 +24,7 @@ namespace BrainVolume
     /// The volume is centred on this transform, so ModelMoveController on the same
     /// GameObject rotates and zooms it about its centre.
     /// </summary>
-    public sealed class FusedVolumeLoader : MonoBehaviour
+    public sealed class FusedVolumeLoader : MonoBehaviour, ISliceableVolume
     {
         [Header("Files (under Assets/StreamingAssets)")]
         public string folder = "Fused";
@@ -108,6 +108,15 @@ namespace BrainVolume
         /// <summary>Raised right after the volume is drawn for a camera, so overlays drawn
         /// in the handler always composite on top of it (both shaders ignore depth).</summary>
         public event System.Action<Camera> Drawn;
+
+        // ISliceableVolume (NeuronalLossSequence): the slice along z, keys off while a timeline owns it
+        float ISliceableVolume.SlicePosition
+        {
+            get => slicePosition;
+            set { sliceSweeping = false; sliceAxis = Axis.Z; sliceDirection = -1; holeMin = holeMax = Vector3.zero; slicePosition = value; }
+        }
+        bool ISliceableVolume.SliceFromHighZ { get => sliceReverse; set => sliceReverse = value; }
+        bool ISliceableVolume.SliceKeysEnabled { get => sliceKeysEnabled; set => sliceKeysEnabled = value; }
 
         Mesh _cube;
         Matrix4x4 _local;                           // unit cube -> this transform's local space

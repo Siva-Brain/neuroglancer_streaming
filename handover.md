@@ -1,11 +1,11 @@
 # neuroglancer_streaming — Project Handover
 
-**Repo**: `D:\SGBC\Unity Projects\neuroglancer_streaming` (git, branch `main`, remote `https://github.com/Siva-Brain/neuroglancer_streaming.git`, in sync with `origin/main` at `7872d5b` apart from one modified scene file — see §9).
-**What it is**: a streaming pipeline that takes a whole human brain's histology, stored as five very large Zarr volumes on a remote HTTP server, and shows it as one reassembled 3D volume in a browser and in Unity on a Sony Spatial Reality Display (SRD, model ELF-SR2). A Python server on the DGX A100 box is the only machine that reads the Zarr data; clients only ever receive small voxel bricks.
-**Unity project**: `brain-streaming/unity/BrainVolumeSRD` — Unity **6000.3.10f1**, **Built-in Render Pipeline** (not URP), Sony `SRDisplayUnityPlugin` **2.6.0**, scene `Assets/Scenes/SampleScene.unity`.
-**Status in one line**: the server, both browser viewers and the Unity scene all exist and are committed (5 commits, all on 2026-09-30). The repo holds no record of the Unity scene having been seen on a real SRD or built to a player, and no evidence that the streamed brain refines beyond its coarsest level in Unity (§10, item 1).
+**Repo**: `D:\Unity\new\neuroglancer_streaming` (git, remote `https://github.com/Siva-Brain/neuroglancer_streaming.git`). **Current branch `brick_L0`**, pushed to `origin/brick_L0` at `9e23a41`, plus uncommitted work (§9). `brick_L0` contains everything: lordsiva's offline-brick work *and* the `neuro_version` work merged in (§6). `origin/neuro_version` is behind (`dfe60ff`; the local branch has `715500b`).
+**What it is**: a streaming pipeline that takes a whole human brain's histology, stored as very large Zarr volumes, and shows it as a 3D volume in a browser and in Unity on a Sony Spatial Reality Display (SRD, model ELF-SR2). Originally (§0-§5) a Python server on the DGX A100 streams voxel bricks from Zarr. Since 2026-10-01 the Unity side also has **local, server-free** paths for the hb02 brain (one exported level, or offline bricks) and a scripted **neuronal-loss** presentation scene (§6).
+**Unity project**: `brain-streaming/unity/BrainVolumeSRD` — Unity **6000.3.25f1** (upgraded from 6000.3.10f1), **Built-in Render Pipeline** (not URP), Sony `SRDisplayUnityPlugin` **2.6.0**. Scenes: `Assets/Scenes/SampleScene.unity` (brain only) and `Assets/Scenes/NeuronalLossScene.unity` (the timeline).
+**Status in one line**: `NeuronalLossScene` plays a seekable timeline — hb02 brain turns to the left sagittal view, is sliced, and SRD_test's neuronal-loss block grows out of the cut face — currently rendered from the **bricked** brain (`Brain` GameObject). The user has seen the rotation, slicing and block on the Editor's Game view; nothing has been built to a player or recorded on the real SRD.
 
-**How this document was produced** (2026-10-01): by reading every doc, the server code, the Unity scripts, the scene file and the git history. **Nothing was run** — no server was started, Unity was not entered into Play, no endpoint was called. Measurements quoted below come from the repo's own docs and are marked as such. Things I worked out by reading code rather than observing are marked *inferred*. §11 lists what is verified and what is not.
+**How this document was produced**: first version 2026-10-01 by reading the repo only (nothing run). **Updated 2026-10-02** after a day of work in this project (sessions with Claude Code): the hb02 data were measured directly from the exported `.raw` files, the label volume was downloaded from the live DGX server, and every code change was compiled in the open Unity Editor (exceptions noted in §9). Visual results are from the user's screenshots/feedback, not from automated checks. Things worked out by reading code rather than observing are marked *inferred*. §11 lists what is verified and what is not.
 
 The format follows `D:\SGBC\Stroke_video\handover.md` (the StrokeVideo_v2 handover). That project's §2bu describes a sibling SRD project (`SRD_test`) and several of its SRD/Editor gotchas apply here; the relevant ones are repeated in §8.
 
@@ -42,6 +42,8 @@ Two generations of the code live side by side. Don't confuse them:
 
 Generation 1 proved the architecture and is kept as a no-data-dependency fallback. All current work is Generation 2.
 
+**Since 2026-09-30 the default dataset changed.** `app_zarr.py` now has a named-brain registry (`server/brain_registry.py`, `server/brains/*.json`). With no `--zarr`, it activates `Brain_580_One_block` = **hb02**: one fused 8 µm RGB block read from a local DDN path on the DGX (`/home/users/azhar/projectM/viewer_data/fused_8um/hb02_fused.zarr`), with a region label map (`hb02_labels.zarr`) and a LUT (`manifest.json`). `--zarr` still bootstraps the five-block Stroke_1 brain described in §2. Most of §6 is about hb02.
+
 ---
 
 ## 1. Repository layout
@@ -49,12 +51,15 @@ Generation 1 proved the architecture and is kept as a no-data-dependency fallbac
 ```
 neuroglancer_streaming/
 ├── handover.md                      this file
-├── .gitignore                       Python, Unity generated folders, *.log, *.bin, the T1 .raw, _Recovery
+├── .gitignore                       Python, Unity generated folders, *.log, *.bin, all StreamingAssets .raw volumes,
+│                                    Bricks/hb02_fused/, Recordings/, .vs, _Recovery
+├── copy.sh                          tar one hb02 level (fused + labels) on the DGX for copying to the SRD PC
 ├── sony_srd_streaming.code-workspace
 └── brain-streaming/
     ├── README.md                    Gen-1 quick start + Docker section for Gen-2
     ├── docker-compose.yml           services `brain` (CPU) and `brain-gpu` (profile gpu)
-    ├── docs/                        7 docs, see the table in §0
+    ├── docs/                        the docs in §0, plus performance-plan.md (DDN + VRAM-resident levels)
+    │                                and brain2-srd-bricking-plan.md (lordsiva's offline-brick plan, brick_L0)
     ├── client/
     │   ├── index.html               Gen-1 Three.js mesh viewer
     │   ├── volume.html              Gen-2 multi-block volume viewer (WebGL raymarch)
@@ -69,12 +74,17 @@ neuroglancer_streaming/
     │   ├── transforms/
     │   │   ├── histology_blocks.json   AUTHORITATIVE per-block voxel size + placement affine
     │   │   └── stroke_transforms.csv   same blocks at 480 µm; not referenced by any code
-    │   ├── datasource/              base.py (interface), http_zarr.py (sharded Zarr v3 reader)
+    │   ├── brain_registry.py, brains/  named brains (Brain_580_One_block = hb02, Brain_580_whole, Brain_585_single)
+    │   ├── deploy/                  Caddyfile, nginx-http2.conf
+    │   ├── datasource/              base.py (interface), http_zarr.py (sharded Zarr v3 reader), local_zarr.py (DDN path)
     │   ├── chunks/                  manager.py (cache/dedup/BVX2), cache.py (LRU), priority.py (camera selection)
     │   ├── gpu/processor.py         CuPy downsample, falls back to NumPy
     │   ├── streaming/               protocol.py (Gen-1 shapes), view.py (Gen-2 pydantic models)
     │   ├── brain/                   Gen-1 synthetic brain, LOD, catalog
-    │   └── tools/verify_chunk.py    fetch + decode one real shard, optionally save a PNG
+    │   └── tools/
+    │       ├── verify_chunk.py      fetch + decode one real shard, optionally save a PNG
+    │       ├── zarr_level_to_raw.py one pyramid level -> <name>.raw + .json for FusedVolumeLoader (RGB24, or R8 labels + .lut)
+    │       └── prebrick_srd.py      (brick_L0) one level -> BC3/BC7 bricks + index.json for BrickVolumeLoader
     └── unity/
         ├── BrainStreaming/          Gen-1 C# scripts only (7 files), never made into a project
         └── BrainVolumeSRD/          the Unity project (§6)
@@ -153,13 +163,16 @@ FastAPI app, version string "3.0", CORS open to all origins, no authentication. 
 ### Level selection (`chunks/priority.py`)
 - Target level depends only on the camera's distance from the block centre: `t = min(distance / (2 × largest extent), 1)`, interpolated between `--min-level` and the coarsest level. A camera further than twice the block's largest dimension gets the coarsest level.
 - Chunks inside the view cone come first, nearest first; the rest follow. At most 24 are returned.
-- `--min-level` (default 3) is the finest level the server will stream. Level 0 is about 1 TB per block; do not set 0 casually.
+- `--min-level` (default 4 since 2026-10-01; was 3) is the finest level the server will stream. Level 0 is about 1 TB per block; do not set 0 casually.
 
 ### GPU (`gpu/processor.py`)
 CuPy if available, NumPy otherwise; results are identical either way. Its job is `resample_xy_max`: block-mean downsample so no brick exceeds `--gpu-max-xy` (default 512) in x or y. `docs/deployment.md` reports the fetch dominating (~170 ms/shard) and GPU processing at ~4 ms, so the real gains are parallel prefetch and smaller bricks.
 
 ### Flags
-`--zarr URL` (repeatable; default is the five blocks), `--host`, `--port` (default **8010**), `--min-level` (3), `--workers` (32), `--gpu/--no-gpu`, `--gpu-max-xy` (512), `--prefetch-top` (8), `--cache-mb` (2048, per block), `--delay-ms` and `--bandwidth-limit` (network simulation), `--voxel-um` / `--voxel-um-raw` (see §2).
+`--zarr URL` (repeatable; bootstraps the five Stroke_1 blocks), `--brain NAME` (a `server/brains/` entry; default hb02), `--host`, `--port` (default **8010**), `--min-level` (now **4**), `--workers` (32), `--gpu/--no-gpu`, `--gpu-max-xy` (now **1500**), `--resident-level` (4: preload that level into GPU memory), `--glass/--no-glass`, `--prefetch-top` (8), `--cache-mb` (2048, per block), `--delay-ms` and `--bandwidth-limit` (network simulation), `--voxel-um` / `--voxel-um-raw` (see §2).
+
+### Added after 2026-09-30 (*read from code, not exercised*)
+`/api/brains`, `/api/brains/{name}`, `/api/brains/save`, `/api/brains/{name}/activate` (brain registry); `/api/label_chunk/{id}` (single-channel BVX2 of region ids, never resampled) and `/api/labels/lut`. `/api/label_chunk` **was** used on 2026-10-01 to rebuild `hb02_L7_labels.raw` (§6). The server at `http://dgx3.humanbrain.in:8010` (= `172.20.23.156:8010`) answered `/api/health` that day with `blocks: ["hb02"]`, CuPy, 8 GPUs.
 
 ---
 
@@ -181,63 +194,78 @@ The browser viewer is the reference implementation. The Unity client was written
 ## 6. Unity project — `unity/BrainVolumeSRD`
 
 ### Project facts
-- Unity 6000.3.10f1, Built-in RP, linear colour space, default resolution 3840×2160.
-- `Assets/SRDisplayUnityPlugin/` is Sony's plugin 2.6.0, committed in full (253 files including samples). The Sony runtime is installed on this machine at `C:\Program Files\Sony\SpatialRealityDisplay`.
-- `Assets/csc.rsp` contains `-define:SONY_SRD_SDK`. This is what compiles the real `SonySRDAdapter`; Player Settings' scripting define symbols are empty. `docs/unity-srd-setup.md` says to use Player Settings — the project does it through `csc.rsp` instead.
-- Player Settings: `insecureHttpOption = 2` (plain HTTP always allowed — required, the server is HTTP), `activeInputHandler = 2` (Both — the plugin uses legacy Input, `ModelMoveController` uses the new Input System), `runInBackground = 1`.
-- Packages: Input System 1.18.0, uGUI, Timeline, and **`com.coplaydev.unity-mcp`** (the Editor can be driven from Claude Code through the UnityMCP tools).
-- Build Settings scene list is **empty**. No player build is recorded anywhere in the repo.
-- `docs/unity-srd-setup.md` was written before the project existed (it says "Unity 2021.3 LTS+" and "I could not run the Unity editor here"). Its class map and data flow are still accurate; its setup steps are superseded by the committed project.
+- Unity **6000.3.25f1**, Built-in RP, linear colour space, default resolution 3840×2160.
+- `Assets/SRDisplayUnityPlugin/` is Sony's plugin 2.6.0, committed in full. `Assets/SRDisplayUnityPlugin/Resources/SRDProjectSettings.asset` now exists (committed 2026-10-01), so "Run Without Spatial Reality Display" is a saved project setting — check it before testing without/with the display.
+- `Assets/csc.rsp` contains `-define:SONY_SRD_SDK` (this, not Player Settings, compiles the real `SonySRDAdapter`).
+- Player Settings: `insecureHttpOption = 2` (plain HTTP always allowed), `activeInputHandler = 2` (Both), `runInBackground = 1`.
+- Packages: Input System 1.20.0, uGUI 2.0.0, Timeline, `com.coplaydev.unity-mcp`.
+- Build Settings scene list is **empty**. No player build exists.
 
-### Scene `Assets/Scenes/SampleScene.unity` — nine root objects
-| Object | State | Components and key values |
+### Three ways the brain gets into Unity
+| Path | Component | Data | Server? |
+|---|---|---|---|
+| Streamed (original Gen-2) | `BrainApp` + `BrainVolumeRenderer` on `BrainRoot` | `/api/view` + `/api/chunk` BVX2 bricks | yes |
+| One exported level | `FusedVolumeLoader` on `FusedVolume` | `StreamingAssets/Fused/hb02_L<n>.raw` (+ `_labels.raw` / `.lut`) from `tools/zarr_level_to_raw.py` | no |
+| Offline bricks (brick_L0) | `BrickVolumeLoader` (whole level) / `BrickStreamer` (LOD, not in a scene) on `Brain` | `StreamingAssets/Bricks/hb02_fused/index.json` + `L<n>/b_*.bc3` from `tools/prebrick_srd.py` | no |
+
+All draw procedurally in `OnRenderObject`, so they appear in the SRD eye cameras without SRD-specific code. All volume shaders use `ZTest Always` / `ZWrite Off` (they ignore scene depth; see §8).
+
+### The hb02 data (measured 2026-10-01 from the exported .raw files)
+- Volume 181.2 × 99.3 × 155.2 mm (x, y, z). L4 = 1416 × 776 × 485 voxels, 0.128 × 0.128 × 0.32 mm. L7 = 177 × 97 × 485. (L3 is 0.064 mm, L6 0.512 mm.) z = **485 sections = the left-right axis** (tissue nearly vanishes around z ≈ 230, the interhemispheric gap). Image row 0 (texture y = 0) is the top of the brain.
+- Background is **pure white**; tissue is only slightly darker (max(rgb) 224-240) but clearly **coloured** (saturation max-min 24-56 vs < 8 for background). Darkness-based rendering (`1 - max(rgb)`) therefore gives a white fog; **opacity must come from saturation**.
+- L4 has whole **black 512×512 blocks** (unwritten Zarr chunks). Trilinear filtering blends black into white -> grey sheets.
+- Each section has **stitching seams**: coloured straight lines 10-22 voxels wide at L4 (1.3-2.8 mm) outside the brain, stacking into flat planes, plus some white seam gaps through tissue.
+- `hb02_L3.raw` on this PC was a truncated copy (470 MB of 6.4 GB) and L3 is too big for one `Texture3D` anyway (2832 > 2048 per side on DX11; > 2 GB for `File.ReadAllBytes`). L4 (1.6 GB) is the finest level `FusedVolumeLoader` can load. The truncated L3/L2 .raw are no longer present; only their .json remain.
+- Labels: `hb02_L7_labels.raw` was rebuilt on 2026-10-01 by downloading all 485 `/api/label_chunk/L7.<z>.0.0.0?block=hb02` bricks from the DGX and concatenating them (8,326,965 B = 177×97×485). 92 % of tissue voxels fall in a labelled region (73 % if mirrored), so it is aligned. 125 region ids, all present in the `.lut`. `hb02_L4_labels.raw` is now also present locally (copied by the user; not checked here).
+
+### `FusedVolumeLoader` + `Brain/FusedRaymarch` (single exported level)
+- On load: black no-data voxels -> white (`blackToWhite`), then a per-section **seam filter** (`seamFilterMm` 1.5: box opening cuts thin lines loose; then only pieces with a core ≥ `seamCoreMm` 3.2 survive, removed whole otherwise). Both in mm, so they behave the same at any level. The user confirmed "planes are gone".
+- Shader: opacity from saturation window (`saturationLow` 0.06 / `saturationHigh` 0.2), colour `pow(rgb, colorGamma 2.5) * brightness 1.2`, gradient shading (`shading` 0.7), per-pixel ray jitter, `raySteps` 256, `opacity` 0.6.
+- Region labels (merged from lordsiva's "lut apply"): `labelName`, `maskToLabels`, `colorRegions`, `labelOpacity`; label tint is applied before shading.
+- Slicing: clip box along `sliceAxis` (default Z = sagittal). Keys **C** slice in / slice back (each press flips direction), **V** reset, **[ ]** step — switched off (`sliceKeysEnabled`) when a timeline owns the slice.
+- Extras used by the timeline: `UnitCubeToWorld`, a `Drawn` event raised right after drawing (overlays composite on top), an optional carved `hole` box (currently unused).
+
+### `BrickVolumeLoader` + `Brain/SRDBrickRaymarch` (offline bricks, brick_L0)
+- lordsiva's P2 loader: reads `index.json`, uploads every brick of one level as BC3 `Texture3D`, places it by its core bbox (centred on the transform, same unit cube as `FusedVolumeLoader`, 0.0025 units/mm).
+- 2026-10-02: shader switched to the `FusedRaymarch` look (saturation opacity, gamma, shading, jitter). Black-to-white and the seam filter can **not** be applied (data are BC3-compressed): grey blends are transparent anyway, but coloured seam planes would need fixing in `prebrick_srd.py`.
+- Opacity is **step-length corrected** against the whole volume (`_BrickToVol`, `_RefSteps` 256): before, each brick took `steps` samples over its own small box and over-accumulated (smeared, streaky look).
+- Slicing: `slicePosition` / `sliceFromHighZ` in whole-volume units, converted per brick to a `_ClipMin/_ClipMax` box; fully cut bricks are skipped. `Drawn` event as in `FusedVolumeLoader`.
+- Data on this PC: L2 ≈ 8.1 GB (24 bricks), L3 ≈ 2.1 GB, L4 ≈ 0.5 GB, all BC3, gitignored. The scene's `Brain` loads **L2** — all bricks resident at once.
+- `BrickStreamer.cs` (lordsiva, "all stages") uses the same shader; it passes the new per-brick values but is not in any scene.
+
+### `ISliceableVolume`
+Interface (`Rendering/ISliceableVolume.cs`) implemented by both loaders: `Loaded`, `UnitCubeToWorld`, `SlicePosition`, `SliceFromHighZ`, `SliceKeysEnabled`, `Drawn`. The timeline only talks to this, so it can drive either brain.
+
+### `NeuronalLossScene` — the timeline (`Rendering/NeuronalLossSequence.cs`)
+A copy of `SampleScene` (which stays brain-only) with a `NeuronalLossSequence` GameObject. Root objects: `Brain` (BrickVolumeLoader + ModelMoveController, **active**, pos (0.256, 0, −0.628), scale 1), `FusedVolume` (FusedVolumeLoader + ModelMoveController, **inactive but kept**, pos (0, 0.5, −0.4), scale 1.4, L4 + L4 labels), plus the original `BrainRoot`/`BrainApp`/`HUD`/`SonySRD`/`Floor`/`T1Volume`.
+
+Which brain it drives: the `volume` field if set, else the active `BrickVolumeLoader`, else an active `FusedVolumeLoader` (logged as `[Loss] Timeline drives '<name>' (<type>)`).
+
+Everything is a **pure function of timeline time** (seeking lands exactly):
+| Step | Default length | What |
 |---|---|---|
-| `Main Camera` | **inactive** | Camera at (0, 1, −10), `BrainCameraController` |
-| `Directional Light` | active | |
-| `BrainRoot` | active | `BrainVolumeRenderer` (steps 48, density 8, material created at runtime), `ModelMoveController` (**disabled**). Position (−0.121, 0.352, 0.232), euler (−90, 0, 30), scale 0.5 |
-| `SonySRD` | active | `SonySRDManager`, mode = `SonyElfSr2`, pointing at the `SRDisplayManager` instance |
-| `HUD` | active | `BrainTelemetry` (IMGUI overlay) |
-| `BrainApp` | active | `BrainApp`: `serverUrl`, channels `0,3`, `unitsPerMm` 0.01, no flips, view interval 0.35 s, max concurrency 6, cache 512 MB. `targetCamera` and `cameraController` both reference the inactive `Main Camera` |
-| `SRDisplayManager` | active | Sony prefab at the origin, scale 3, `_SRDViewSpaceScale` 3, spatial clipping off |
-| `Floor` | active | Plane at (0, 0, 0.356), scale (0.179, 1, 0.0712), `Materials/FloorMat.mat` (dark grey) |
-| `T1Volume` | active in the working tree, inactive in the last commit (§9) | `T1VolumeLoader` (folder `T1`, base name `t1_mri`, `unitsPerMm` 0.0025, steps 128, density 1, window 0.1–1), `ModelMoveController` (enabled). Position (0, 0.34, 0.36), rotated 180° about Y |
+| Brain | `showBrain` 2.5 s | brain at Euler `initialEuler` (0, 270, 180) |
+| Rotate | `rotate` (scene: 4 s) | **Euler Y only** 270 -> `endY` 360 (+ `extraTurns`×360), X and Z held = pure world-Y turn, ends on the left sagittal view |
+| Slice | `slice` 4 s | cut from the side facing the viewer to `clippingDepth` 0.3 |
+| Neuronal loss | `grow` 4 s + label + `hold` 3 s | block appears tiny (`startScale` 0.02) at `pointOnCut` on the cut face, heads straight out of the cut face (`arcTowardViewer` 0.3) and curves left past the brain's front (`sideDistance` 0.2, `comeOut` 0.3), slight size overshoot; then the label card fades in |
 
-### Streaming path (namespace `BrainVolume`)
-| Layer | Files | Role |
-|---|---|---|
-| Orchestrator | `Scripts/BrainApp.cs`, `Scripts/BrainBlock.cs` | boot, one cache + scheduler per block, periodic `/api/view` per block, HUD stats |
-| Networking | `Networking/BrainStreamClient.cs`, `BrainChunk.cs`, `BrainStreamRequest.cs` (`RequestScheduler`) | `UnityWebRequest` on the main thread, `JsonUtility` DTOs, BVX2 parse, prioritized bounded-concurrency fetch with cancellation |
-| Cache | `Cache/BrainChunkCache.cs` | per-block LRU of GPU bricks, keyed by **z-slab only**, keeps the finest level seen per slab |
-| Rendering | `Rendering/BrainVolumeRenderer.cs`, `BrainChunkRenderer.cs` (`Brick`), `BrainCoordinateSystem.cs`, `BrainRaymarch.shader`, `BrainCameraController.cs` | one `Texture3D` (RG16) per brick, drawn with `Graphics.DrawMeshNow` in `OnRenderObject`, sorted back to front |
-| Sony | `Sony/SonySRDManager.cs`, `SonySRDAdapter.cs` | `ISonySRDAdapter` isolates the SDK; `NullSRDAdapter` when absent |
-| Debug | `Debug/BrainTelemetry.cs` | on-screen stats |
+- **The brain's transform position and scale are never written** — only its rotation (and only while the timeline time moves) and its slice.
+- `pointOnCut` (0.82, 0.28) = upper-front cortex marked by the user on a screenshot (located by calibrating against the ROI dot; just inside the tissue edge of section 145). Same coordinates for both loaders.
+- The block is **SRD_test's neuronal-loss block**: `StreamingAssets/NeuronalLoss/NeuronalLoss_48x48x117_RG.bytes` (copied from `D:\Unity\SRD_test\Assets\Volume`, RG16: R = `neuronal_loss_roi_smooth` grey tissue, G = `neuronal_loss_inverse_roi` pink/purple signal), drawn by `Brain/NeuronalLossVolume` (Built-in port of SRD_test's URP shader, same numbers), true voxel proportions, yaw 45°, tilt 12°, `blockLength` 0.3, **not rotating** (`spinDegreesPerSecond` 0), white bold-italic "Neuronal loss / Stroke tissue · 3D histology stack" card. SRD_test's arrow is available (`showArrow`) but off.
+- Source .npy (not used at runtime): `D:\Unity\new\npy_neuronal_loss\neuronal_loss_{roi_smooth,inverse_roi}_133-181_81-129.npy`, float32 (117, 48, 48). The ROI is x 133-181, y 81-129 of hb02 **L6** (354×194), all sections (checked: 77 % tissue vs 9-14 % for the swapped box). Axis 0 (117) spans all 485 sections (both maps ≈ 0 at slice 56 ≈ the midline gap) — *inferred*.
+- **Final block pose you set yourself**: at runtime the block's final pose is the GameObject **`NeuronalLossBlock`** (top level in the Hierarchy, Play mode only). Once the block is in place the mouse/keyboard move **the block** (`controlsMoveBlock`; **M** switches to the brain and back; WASD/QE move, arrows/right-drag rotate, +/-/scroll scale); **K** copies `finalPosition / finalEuler / finalScale` to the clipboard and Console. Put those in the fields and tick `useCustomFinal` to make them permanent. *The user was about to choose these values; none are set yet.*
+- **Seek bar** `UI/TimelineTransportUI.cs` (port of SRD_test's `StoryTransportUI`, added automatically): play/pause, scrubbable bar with a tick per step, time and step name, on the panel near the bottom edge. Keys: **Space** play/pause, **R** restart, **, .** ±1 s (hold to scrub), **[ ]** ±5 s, **Home/End**, **H/T** hide/show. While the bar is dragged `TimelineTransportUI.PointerCaptured` makes `ModelMoveController` ignore the mouse (so a drag never moves the brain).
 
-Boot sequence in `BrainApp.Start`: `GET /api/dataset/info` (3 tries) → `GET /api/transforms` → build one `BrainBlock` per block with its world matrix (identity plus a warning if the server sent none) → bind the renderer → `FitView` → enqueue every block's baseline chunks. After that, `Update` posts the camera to `/api/view` for each block every 0.35 s, but only while the camera has moved or fetches are outstanding.
+### Other scripts added 2026-10-01
+- `Rendering/BrainShowcase.cs`: 30 s scripted orbit/slice of the fused volume with MP4 recording (`UnityEditor.Media.MediaEncoder`, Editor only, to `BrainVolumeSRD/Recordings/`). **P** preview, **F10** record. Not in any scene (add it to a GameObject to use). Written for the earlier "video" request; never recorded.
+- `UI/UiKit.cs`: tiny world-space uGUI builders.
+- `ModelMoveController.cs`: one-line guard for the seek bar (above).
 
-**Coordinate chain** (documented in `BrainCoordinateSystem.cs`, and the same as the browser):
+### Streaming path (unchanged, `BrainApp` on `BrainRoot`)
+`BrainApp` gained `pinCoarsest` (default on: pin to the coarsest level), `wholeBrain`, `lodMin/lodMax` and an RGB path for hb02. Its default `serverUrl` is `http://dgx3.humanbrain.in:8010`; the scenes have `http://172.20.23.156:8010/` (same machine). `BrainRoot` is **inactive** in both scenes. The coordinate chain, cache and Sony adapter are as described in the 2026-10-01 version of this file (see git history of `handover.md`).
 
-```
-unit cube ─BrickMmMatrix→ block-local mm ─WorldMatrix (omeToRas)→ RAS mm ─×unitsPerMm (+ optional flips)→ Unity local ─BrainRoot→ world
-```
-
-The camera goes the other way for `/api/view`: world → `BrainRoot` local → RAS mm → that block's local mm. Flips mirror the whole brain and are only for fixing left/right against a landmark; orient the brain by rotating `BrainRoot`.
-
-**Because rendering happens in `OnRenderObject`, it runs once per rendering camera**, so the volume appears in the Sony plugin's eye cameras with no Sony-specific drawing code.
-
-`Brain/Raymarch`: object-space march through the unit cube, premultiplied OVER blending, `ZWrite Off`, `ZTest Always`, `Cull Front` by default (so it still draws with the camera inside a brick). R = grey, G = tissue mask.
-
-### Local T1 MRI path (independent of the server)
-`Rendering/T1VolumeLoader.cs` + `Rendering/T1Raymarch.shader` + `Materials/T1Volume.mat` (tint 0.85, 0.65, 0.55). Loads `Assets/StreamingAssets/T1/t1_mri.json` and `t1_mri.raw` — a 384×384×183 single-channel R8 volume (26,984,448 bytes) downsampled 0.75× from a 512×512×244 NIfTI (`t1_mri.nii.gz`, 0.488 × 0.488 × 0.700 mm). The loader remaps axes from the raw file's (superior, anterior, right) to Unity's (right, up, anterior) and centres the volume on its transform. It uses per-sample opacity that does not depend on step length, giving a solid surface rather than fog.
-
-**`t1_mri.raw` is gitignored.** It is on this machine but a fresh clone will not have it, and the loader will log `[T1] Missing …`. The conversion script named in the loader's comment (`nifti_grayscale_to_raw.py`) is not in this repo.
-
-### Controls — `Scripts/ModelMoveController.cs` (global namespace)
-Moves the object it sits on, in the SRD display frame (X right, Y up, Z away from the viewer), falling back to world axes if no active `SRDManager` is found.
-- **W/S** deeper / nearer, **A/D** left / right, **Q/E** down / up, **left drag** slide in the display plane.
-- **Arrow keys** or **right drag** rotate (turntable about the bounds centre).
-- **+ / −** or **scroll** zoom, clamped to 0.25×–4× the starting scale.
-
-It finds its pivot from child `Renderer` bounds. Neither `BrainRoot` nor `T1Volume` has a `Renderer` (both draw procedurally), so the pivot is the object's own position. That is correct for `T1Volume`, which is centred on its transform.
+### Local T1 MRI path
+`T1VolumeLoader` + `T1Raymarch` on `T1Volume` (inactive). `t1_mri.raw` is gitignored and was not on this PC's StreamingAssets listing on 2026-10-02.
 
 ---
 
@@ -246,72 +274,69 @@ It finds its pivot from child `Renderer` bounds. Neither `BrainRoot` nor `T1Volu
 ### Server (DGX, Linux)
 ```bash
 cd brain-streaming/server
-pip install -r requirements.txt
-
-python3 app_zarr.py --host 0.0.0.0 --port 8010 --min-level 3 --no-gpu     # CPU, always works
-
-# A100 / CuPy: one-time install, then launch through the wrapper
-pip install --user cupy-cuda12x==13.3.0 nvidia-cuda-nvrtc-cu12 nvidia-cuda-runtime-cu12
-./run_dgx.sh --host 0.0.0.0 --port 8010 --min-level 3 --workers 48
+python3 app_zarr.py --host 0.0.0.0 --port 8010 --no-gpu          # CPU; default brain = hb02
+./run_dgx.sh --host 0.0.0.0 --port 8010 --workers 48             # CuPy (cupy-cuda12x==13.3.0)
 ```
-Docker, from `brain-streaming/`: `docker compose up --build` (CPU, port 8010) or `docker compose --profile gpu up --build brain-gpu`. `PORT` and `MIN_LEVEL` environment variables are honoured.
+Check with `curl http://dgx3.humanbrain.in:8010/api/health`.
 
-The DGX needs outbound HTTP to `3dstrokeviewer.humanbrain.in:8056` and one inbound TCP port. Check with `curl http://<host>:<port>/api/health`.
-
-### Browser
-`http://<host>:<port>/` for the reassembled brain, `/roi` for the ROI viewer.
+### Exporting data for the local Unity paths (on the DGX)
+```bash
+cd brain-streaming/server/tools
+python3 zarr_level_to_raw.py --level 4                                     # hb02_L4.raw/.json (RGB24)
+python3 zarr_level_to_raw.py --level 4 --zarr .../hb02_labels.zarr         # hb02_L4_labels.raw/.json/.lut
+python3 prebrick_srd.py ...                                                # bricks (see docs/brain2-srd-bricking-plan.md)
+```
+Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets/Bricks/hb02_fused/` — **they are gitignored, so a fresh clone has none of them.** Check sizes: an L4 RGB .raw is exactly 1416×776×485×3 bytes; the loaders refuse a truncated file.
 
 ### Unity
-1. Open `brain-streaming/unity/BrainVolumeSRD` in Unity 6000.3.10f1 and load `Assets/Scenes/SampleScene.unity`.
-2. Select `BrainApp` and set **Server Url** to the running server.
-3. Press Play. The HUD (top left) should show `CONNECTED`, the block count, and bricks loading.
-4. Without an SRD attached, the plugin's "Run Without Spatial Reality Display" setting must be on — see §8 item 3.
+1. Open `brain-streaming/unity/BrainVolumeSRD` in **6000.3.25f1**.
+2. `Assets/Scenes/NeuronalLossScene.unity` -> Play: the timeline runs (Space/R/seek bar). `SampleScene.unity` = brain only (C slices).
+3. Without an SRD attached, the plugin's "Run Without Spatial Reality Display" setting must be on (Project Settings ▸ Spatial Reality Display, stored in `SRDProjectSettings.asset`).
 
 ---
 
 ## 8. Standing gotchas
 
-1. **There is no single agreed server address or port.** `app_zarr.py` and Docker default to 8010; `docs/deployment.md` and `docs/unity-srd-setup.md` use 8090; Gen-1 uses 8000; the `BrainApp` script default is `http://192.168.1.50:8090`; the committed scene has `http://172.20.23.156:8095/`; the uncommitted scene has `http://172.20.23.230:10226/`. I do not know which of these, if any, is serving right now. Confirm with `/api/health` before debugging anything else.
-2. **`extent_mm` is in (z, y, x) order** in `/api/dataset/info`, while the BVX2 bbox and the transform matrices are in (x, y, z). `BrainBlock.HalfExtentMm` does the swap; any new client code must too.
-3. **Running without the display.** There is no `Assets/SRDisplayUnityPlugin/Resources/SRDProjectSettings.asset` in this project, so the plugin uses its default, `RunWithoutSpatialRealityDisplay = false`. The StrokeVideo handover (§2bu A) records what that does on a machine with no SRD: entering Play pops native "Failed to detect Spatial Reality Display" error boxes, blocks the Editor main thread, and the plugin exits Play when they are closed. Turn the setting on under Project Settings ▸ Spatial Reality Display to test on a normal monitor, and off again for the real display. In that mode the plugin's mouse head-simulator also uses right-drag and scroll, which overlaps with `ModelMoveController` (set `rightDragRotates = false` if it gets in the way).
-4. **One Unity Editor at a time** if you drive it through UnityMCP — the StrokeVideo handover notes all project copies share the bridge port (8080).
-5. **The Unity brick cache is keyed by z-slab only.** That is correct only while each level has a 1×1 shard grid in x/y, which holds for levels 3–7 (3000 px and smaller fit in one 4096 shard). Levels 2, 1 and 0 have 2×2, 3×3 and 6×6 grids, so running the server with `--min-level` below 3 would make bricks overwrite each other in Unity. The comment in `BrainChunkCache.cs` says to extend the key to (z, y, x) when that day comes.
-6. **Both raymarch shaders use `ZTest Always` and `ZWrite Off`.** They ignore scene depth: the volume draws over the floor and anything else, and two volumes do not occlude each other correctly.
-7. **If a volume is invisible or looks inside-out**, flip `Cull` on its material (Front ↔ Back). If it is too faint or too solid, change density (streamed brain: 2–15 is the suggested range).
-8. **`Texture3D` in `RG16`** is fine on desktop DX11; `docs/unity-srd-setup.md` lists fallbacks if a platform rejects it.
-9. **Server-side caches are large by default**: 2 GB LRU *per block* (five blocks → up to 10 GB) plus a 16 GB ROI payload cache. Fine on the DGX (~2 TB RAM per `docs/deployment.md`), not on a laptop — pass `--cache-mb`.
-10. **The first GPU call can take ~20 s** (CuPy compiles kernels). `GpuProcessor.warmup` does this at startup so no user request pays for it. Use `cupy-cuda12x==13.3.0`, not 14.x (per `docs/deployment.md`, 14.x fails to import on the DGX).
-11. **The server has no authentication and open CORS**, and `PUT /api/roi/settings` rewrites a file on the server. Keep it on a trusted network.
-12. **`LruChunkCache` defines `__len__`**, so an empty cache is falsy. Test `cache is not None`, never `cache or default` (noted in `chunks/manager.py`).
-13. **`Assets/_Recovery/`** holds two crash-recovery scene copies from 2026-09-30 (14:48 and 14:56). They are gitignored. If Unity offers to recover scene backups on launch and the scene was saved, answer No (StrokeVideo handover §2bu F).
-14. **Docs lag the code.** Treat `histology_blocks.json`, `app_zarr.py` and the scene file as truth; see §2 (voxel size), §6 (setup doc) and item 1 above (ports).
+1. **Address**: the live server is `http://dgx3.humanbrain.in:8010` = `http://172.20.23.156:8010` (2026-10-01). Older docs/scenes mention 8090, 8095, 10226.
+2. **`extent_mm` is (z, y, x)** in `/api/dataset/info`; BVX2 bbox and transforms are (x, y, z).
+3. **Running without the display**: see §7.3 and the StrokeVideo handover §2bu A.
+4. **One Unity Editor at a time** if driven through UnityMCP (shared bridge port 8080).
+5. **Streamed brick cache is keyed by z-slab only** (fine for levels ≥ 3).
+6. **All volume shaders ignore depth** (`ZTest Always`, `ZWrite Off`). Volumes draw over everything; ordinary scene objects (floor, the uGUI label card and seek bar) can be **hidden behind the brain**. Overlays that must sit on top are drawn from the loader's `Drawn` event (the neuronal-loss block does this).
+7. **Large StreamingAssets** (all gitignored): `Fused/hb02_L4.raw` 1.6 GB, `Bricks/hb02_fused/L2` 8.1 GB. The `Brain` object loads all of L2 at Play — slow start and heavy GPU memory; `level = 3` (2.1 GB) if it struggles.
+8. **Namespace trap**: brick_L0's scripts live in `BrainVolume.SRD`, so inside `namespace BrainVolume` a bare `SRD.Core.X` resolves to `BrainVolume.SRD.Core` and fails (CS0234). Use `using SRD.Core;` at file top (current fix in the Sony scripts) or `global::SRD.Core.X`.
+9. **Play-mode edits are lost** on Stop — e.g. the `NeuronalLossBlock` pose; copy with K first.
+10. **Unity compiles only when the Editor has focus**; a stale `Library/ScriptAssemblies/Assembly-CSharp.dll` timestamp means "not compiled yet", not "compiled OK".
+11. **Branches**: `brick_L0` is lordsiva's; today's work was merged into it and pushed. `neuro_version` (local) also has the NeuronalLossScene commit `715500b`, but `origin/neuro_version` does not.
+12. Server-side gotchas from the first version still hold: big default caches (2 GB/block + 16 GB ROI), first CuPy call ~20 s, no auth / open CORS, `LruChunkCache` is falsy when empty, docs lag the code.
 
 ---
 
-## 9. Uncommitted state (working tree, 2026-10-01)
+## 9. Working-tree state (2026-10-02, branch `brick_L0`)
 
-One file is modified, `brain-streaming/unity/BrainVolumeSRD/Assets/Scenes/SampleScene.unity`, with two changes:
-- `BrainApp.serverUrl`: `http://172.20.23.156:8095/` → `http://172.20.23.230:10226/`
-- `T1Volume` GameObject: inactive → **active**
+**Uncommitted** (2026-10-01 late / 2026-10-02):
+- Brick shader -> FusedRaymarch look + step-length opacity correction + clip box: `Rendering/SRDBrickRaymarch.shader`, `SRD/BrickVolumeLoader.cs`, `SRD/BrickStreamer.cs` (per-brick values only).
+- Timeline drives the bricked `Brain`: new `Rendering/ISliceableVolume.cs` (+ .meta), `Rendering/FusedVolumeLoader.cs` (implements it), `Rendering/NeuronalLossSequence.cs` (`volume` field, `FindVolume`), `Scenes/NeuronalLossScene.unity` (the user's `Brain` GameObject, `FusedVolume` inactive, block-controls fields).
+- `BrainVolumeSRD.slnx` — Unity/VS regenerated, whitespace only; leave out.
 
-So in the working tree the streamed brain (`BrainRoot`) and the local T1 head (`T1Volume`) are both active and sit in overlapping positions inside the display volume. Given gotcha 6, they will not composite correctly against each other. Whether showing both is intended (for example, to compare or co-register them) or the T1 was switched on for a separate test is not recorded anywhere; ask before committing.
+**Compile status**: all of the above compiled without errors (Editor.log, 2026-10-02 10:36). The one Play run since logged `[Loss] No active brain volume (BrickVolumeLoader or FusedVolumeLoader) in the scene.` with **no `[Bricks]` line at all** in that session, i.e. `BrickVolumeLoader` never started — most likely `Brain` was switched off in the Editor during that run (the saved scene has it active). Re-check: Brain active, press Play in `NeuronalLossScene`, expect `[Bricks] hb02_fused L2: loaded 24/24 bricks` and `[Loss] Timeline drives 'Brain' (BrickVolumeLoader)`.
 
-A Unity process was running on this machine when this was written. If it has this scene open with unsaved edits, the file on disk may not be the latest state.
+**Stash**: `stash@{0}` "brick_L0 Unity-generated slnx + packages-lock before merging neuro_version" — regenerated files, normally safe to drop.
+**Backup**: 16 `.meta` files Unity had regenerated on brick_L0 before the merge are in the Claude scratchpad (`brick_L0_untracked_backup`); the tracked versions from neuro_version replaced them. Not needed unless a GUID problem shows up.
 
 ---
 
 ## 10. Open issues and suggested next steps
 
-1. **Streamed brain is probably stuck at the coarsest level in Unity** (*inferred from code, not observed*). `BrainApp` sends `/api/view` using `targetCamera`, which is the **inactive** `Main Camera` fixed at (0, 1, −10). That is roughly 10 Unity units from `BrainRoot`, which at scale 0.5 and 0.01 units/mm is about 2,000 mm in brain space — far beyond twice the block size (384 mm) — so the server's distance rule returns level 7 for every block. The camera never moves (its controller is on the inactive object, and `ModelMoveController` moves the model, not the camera), so after the baseline loads no further views are sent. The viewer's real eye position on the SRD is never used. Fix options: drive `/api/view` from the SRD's tracked eye camera or a synthetic camera placed at the viewer's nominal position in the display frame, and re-post when `BrainRoot` moves; or bypass distance and request a fixed level for the SRD case. Verify first by watching the HUD's "Target LOD" and "Loaded LOD" lines in Play.
-2. **Decide the `BrainRoot` / `T1Volume` relationship** (§9), and if both are to be shown together, register the T1 into RAS mm properly. `t1_mri.json` carries the NIfTI affine, which is what a registration would start from.
-3. **`ModelMoveController` is disabled on `BrainRoot`**, so the streamed brain cannot currently be moved with the keyboard or mouse; only `T1Volume` can. Enable it (and decide whether both objects should move together under a common parent).
-4. **No evidence of a run on the real ELF-SR2 or of a player build.** Build Settings has no scenes. Add `SampleScene`, build Windows x64, and test on the display.
-5. **Correct the stale voxel-size text** (§2): the `http_zarr.py` docstring, the `--voxel-um` default and help, and the README Docker example.
-6. **`/dashboard` under `app_zarr.py` serves the Gen-1 viewer**, which calls `/api/brain/*` routes that only `app.py` provides (*inferred*). Either remove the route or point it at something that works.
-7. **Pick one port and one address convention** and make the docs, Docker and the scene agree (§8 item 1). Consider reading the server URL from a config file or command-line argument so the scene file stops changing every time the server moves.
-8. **Check in or document the T1 data path**: where `t1_mri.raw` comes from and how to regenerate it (§6).
-9. **Longer-term items already listed in the repo's docs**: WebSocket transport with server push and real cancellation (`README.md`, `docs/protocol.md`); multi-GPU round-robin for brick processing (`docs/deployment.md`; already done for the ROI path); a per-shard occupancy scan to find which sections hold real tissue (`docs/dataset.md`).
-10. **This project has no Claude Code memory yet** (`C:\Users\HishamKadambot\.claude\projects\D--SGBC-Unity-Projects-neuroglancer-streaming\memory\` is empty), so this file is the only carried-over context.
+1. **Run the uncommitted Brain/timeline work** with `Brain` active (§9), then commit it on brick_L0.
+2. **Set the neuronal-loss block's final transform**: in Play press End (block in place), move `NeuronalLossBlock` or edit it in the Inspector, press K, put the values in `finalPosition/finalEuler/finalScale` with `useCustomFinal` on.
+3. **Seam planes on the bricked brain**: if visible, add black-to-white + the seam filter (port `FusedVolumeLoader.RemoveSeams`) to `tools/prebrick_srd.py` and re-brick.
+4. **Brain vs FusedVolume placement**: `Brain` sits at a different position/scale from `FusedVolume`; the block's computed end pose follows the brain, but `pointOnCut` / `sideDistance` / `comeOut` were tuned on FusedVolume's screenshots.
+5. **Which side is the left hemisphere** is still *inferred* (section 0 faces the viewer at Y = 360). If it is the right one, set `endY` = 180.
+6. **Video**: `BrainShowcase` records the old orbit, not this timeline. If a video of NeuronalLossScene is wanted, point F10 recording at `NeuronalLossSequence` (it is already time-driven, so `Time.captureFramerate` recording fits).
+7. **Push `neuro_version`** if anyone still works from that branch.
+8. Nothing has been **built to a player** or **seen on the real ELF-SR2**; Build Settings has no scenes.
+9. From the first version, still open: stale 0.5 µm voxel text (§2), `/dashboard` serves the Gen-1 viewer, pick one port/address convention, document the T1 data path, WebSocket transport / multi-GPU / occupancy scan.
 
 ---
 
@@ -319,11 +344,12 @@ A Unity process was running on this machine when this was written. If it has thi
 
 | Claim | Basis |
 |---|---|
-| File layout, scene contents, component values, flags, endpoints, payload format | Read directly from the files on 2026-10-01 |
-| Zarr format, channel meaning, fetch/decode timings, DGX hardware, GPU timings, CuPy version advice | Quoted from `docs/dataset.md` and `docs/deployment.md` (measured by their author on 2026-09-29/30); not re-measured |
-| Block thicknesses in §2 | My arithmetic from `histology_blocks.json` |
-| Shapes of blocks 584–587 | From the JSON's `nSections`; only block 580's Zarr metadata was inspected in the docs |
-| SRD behaviour with no display attached | Quoted from the StrokeVideo handover §2bu; not reproduced here |
-| §10 items 1 and 6 | Inferred by reading the code paths; not observed running |
-| Whether any server is currently up, and at which address | **Unknown** |
-| Whether the Unity scene has ever been seen on the real display | **Unknown** — nothing in the repo records it |
+| hb02 voxel statistics (white background, saturation separates tissue, black 512² chunks, seam widths, interhemispheric gap at z ≈ 230) | Measured 2026-10-01 from `hb02_L4.raw` / `hb02_L7.raw` with small C# scans |
+| Seam filter removes the planes without eating the brain | Offline test on L4 sections 60/260/330/420 + the user's "planes are gone" |
+| `hb02_L7_labels.raw` correct and aligned | Built from the live server's `/api/label_chunk`; header/size checks; 92 % vs 73 % alignment test |
+| ROI of the .npy files = L6 x 133-181, y 81-129 | Tissue-overlap test (77 % vs 9-14 %); the in-plane transpose could not be decided from data |
+| Timeline, block, seek bar, centre/side placements, Y-only rotation | Compiled without errors in the Editor; behaviour from the user's Play-mode screenshots/feedback |
+| Brick shader look + timeline on `Brain` (2026-10-02) | Compiled without errors; **not yet seen running** (the only Play run had Brain inactive, see §9) |
+| SRD_test reference look | From `D:\Unity\SRD_test\Captures\neuronal_block_final.png` / `neuronal_loss_pose.png` (the .mp4 was not viewed) |
+| Server state, Gen-1, browser clients, streamed path | As in the first version: read from code/docs, not re-run (except `/api/health` and `/api/label_chunk` on 2026-10-01) |
+| Real SRD display, player build | **Unknown / not done** |
