@@ -1,9 +1,9 @@
 # neuroglancer_streaming — Project Handover
 
-**Repo**: `D:\Unity\new\neuroglancer_streaming` (git, remote `https://github.com/Siva-Brain/neuroglancer_streaming.git`). **Current branch `brick_L0`**, pushed to `origin/brick_L0` at `9e23a41`, plus uncommitted work (§9). `brick_L0` contains everything: lordsiva's offline-brick work *and* the `neuro_version` work merged in (§6). `origin/neuro_version` is behind (`dfe60ff`; the local branch has `715500b`).
+**Repo**: `D:\Unity\new\neuroglancer_streaming` (git, remote `https://github.com/Siva-Brain/neuroglancer_streaming.git`). **Current branch `brick_L0`**, pushed to `origin/brick_L0` at `25eb342` (2026-10-02; nothing uncommitted except a regenerated `.slnx`, §9). `brick_L0` contains everything: lordsiva's offline-brick work *and* the `neuro_version` work merged in (§6). `origin/neuro_version` is behind (`dfe60ff`; the local branch has `715500b`).
 **What it is**: a streaming pipeline that takes a whole human brain's histology, stored as very large Zarr volumes, and shows it as a 3D volume in a browser and in Unity on a Sony Spatial Reality Display (SRD, model ELF-SR2). Originally (§0-§5) a Python server on the DGX A100 streams voxel bricks from Zarr. Since 2026-10-01 the Unity side also has **local, server-free** paths for the hb02 brain (one exported level, or offline bricks) and a scripted **neuronal-loss** presentation scene (§6).
 **Unity project**: `brain-streaming/unity/BrainVolumeSRD` — Unity **6000.3.25f1** (upgraded from 6000.3.10f1), **Built-in Render Pipeline** (not URP), Sony `SRDisplayUnityPlugin` **2.6.0**. Scenes: `Assets/Scenes/SampleScene.unity` (brain only) and `Assets/Scenes/NeuronalLossScene.unity` (the timeline).
-**Status in one line**: `NeuronalLossScene` plays a seekable timeline — hb02 brain turns to the left sagittal view, is sliced, and SRD_test's neuronal-loss block grows out of the cut face — currently rendered from the **bricked** brain (`Brain` GameObject). The user has seen the rotation, slicing and block on the Editor's Game view; nothing has been built to a player or recorded on the real SRD.
+**Status in one line**: `NeuronalLossScene` plays a seekable timeline — hb02 brain starts at a fixed start pose, turns to the left sagittal view, is sliced, and SRD_test's neuronal-loss block grows out of the cut face along a straight line — rendered from the **bricked** brain (`Brain` GameObject; **the user's chosen brain for all further development**, `FusedVolume` is off). On Play it also records itself to `Recordings/neuronal_loss_*.mp4` (`TimelineRecorder`). The user has seen the (curved) block path on the Editor's Game view; the straight path, start pose, smaller block, recorder and the bricked brain in this scene are written and committed but **not yet compiled or run** (§9). Nothing has been built to a player or shown on the real SRD.
 
 **How this document was produced**: first version 2026-10-01 by reading the repo only (nothing run). **Updated 2026-10-02** after a day of work in this project (sessions with Claude Code): the hb02 data were measured directly from the exported `.raw` files, the label volume was downloaded from the live DGX server, and every code change was compiled in the open Unity Editor (exceptions noted in §9). Visual results are from the user's screenshots/feedback, not from automated checks. Things worked out by reading code rather than observing are marked *inferred*. §11 lists what is verified and what is not.
 
@@ -237,27 +237,37 @@ All draw procedurally in `OnRenderObject`, so they appear in the SRD eye cameras
 Interface (`Rendering/ISliceableVolume.cs`) implemented by both loaders: `Loaded`, `UnitCubeToWorld`, `SlicePosition`, `SliceFromHighZ`, `SliceKeysEnabled`, `Drawn`. The timeline only talks to this, so it can drive either brain.
 
 ### `NeuronalLossScene` — the timeline (`Rendering/NeuronalLossSequence.cs`)
-A copy of `SampleScene` (which stays brain-only) with a `NeuronalLossSequence` GameObject. Root objects: `Brain` (BrickVolumeLoader + ModelMoveController, **active**, pos (0.256, 0, −0.628), scale 1), `FusedVolume` (FusedVolumeLoader + ModelMoveController, **inactive but kept**, pos (0, 0.5, −0.4), scale 1.4, L4 + L4 labels), plus the original `BrainRoot`/`BrainApp`/`HUD`/`SonySRD`/`Floor`/`T1Volume`.
+A copy of `SampleScene` (which stays brain-only) with a `NeuronalLossSequence` GameObject (components `NeuronalLossSequence` + `TimelineRecorder`). Root objects: `Brain` (BrickVolumeLoader + ModelMoveController, **active, the brain to develop on** — user's decision 2026-10-02), `FusedVolume` (FusedVolumeLoader + ModelMoveController, **inactive but kept**, pos (0, 0.5, −0.4), scale 1.4, L4 + L4 labels), plus the original `BrainRoot`/`BrainApp`/`HUD`/`SonySRD`/`Floor`/`T1Volume`.
 
-Which brain it drives: the `volume` field if set, else the active `BrickVolumeLoader`, else an active `FusedVolumeLoader` (logged as `[Loss] Timeline drives '<name>' (<type>)`).
+Which brain it drives: the `volume` field — in the scene set to `Brain`'s BrickVolumeLoader — else the active `BrickVolumeLoader`, else an active `FusedVolumeLoader` (logged as `[Loss] Timeline drives '<name>' (<type>)`).
+
+**Start pose** (`useStartPose`, on; 2026-10-02): when the timeline starts, the brain is put once at `startPosition` (−0.0225, 0.5353, **−0.57**), `startRotation` quaternion (0.52188, −0.04395, −0.84894, 0.07078) and `startBrainScale` 1.4. The transform came from the user (originally z −0.7203; moved 0.15 back so the block stays in frame). `Brain`'s Transform in the scene holds the same values. With `useStartPose` off, the old behaviour (start at `initialEuler`, Y-only turn) returns.
 
 Everything is a **pure function of timeline time** (seeking lands exactly):
 | Step | Default length | What |
 |---|---|---|
-| Brain | `showBrain` 2.5 s | brain at Euler `initialEuler` (0, 270, 180) |
-| Rotate | `rotate` (scene: 4 s) | **Euler Y only** 270 -> `endY` 360 (+ `extraTurns`×360), X and Z held = pure world-Y turn, ends on the left sagittal view |
+| Brain | `showBrain` 2.5 s | brain at the start pose (or Euler `initialEuler` (0, 270, 180) if `useStartPose` off) |
+| Rotate | `rotate` (scene: 4 s) | **Slerp** (shortest way, ≈ 64°) from `startRotation` to the left sagittal pose Euler (`initialEuler.x`, `endY` 360, `initialEuler.z`) = (0, 360, 180), plus `extraTurns`×360 about world Y. Without the start pose: Euler Y only 270 -> 360 |
 | Slice | `slice` 4 s | cut from the side facing the viewer to `clippingDepth` 0.3 |
-| Neuronal loss | `grow` 4 s + label + `hold` 3 s | block appears tiny (`startScale` 0.02) at `pointOnCut` on the cut face, heads straight out of the cut face (`arcTowardViewer` 0.3) and curves left past the brain's front (`sideDistance` 0.2, `comeOut` 0.3), slight size overshoot; then the label card fades in |
+| Neuronal loss | `grow` 4 s + label + `hold` 3 s | block appears tiny (`startScale` 0.02) at `pointOnCut` on the cut face and travels in a **straight line** (`straightPath`, on; eased in/out) to its place past the brain's front (`sideDistance` 0.2) and out of the cut face (`comeOut` 0.3), slight size overshoot; then the label card fades in. `straightPath` off = the old curve (`arcTowardViewer` 0.3 out of the cut face, then left) |
 
-- **The brain's transform position and scale are never written** — only its rotation (and only while the timeline time moves) and its slice.
+- **The brain's transform position and scale are written only once** (the start pose) — after that only its rotation (and only while the timeline time moves) and its slice.
 - `pointOnCut` (0.82, 0.28) = upper-front cortex marked by the user on a screenshot (located by calibrating against the ROI dot; just inside the tissue edge of section 145). Same coordinates for both loaders.
-- The block is **SRD_test's neuronal-loss block**: `StreamingAssets/NeuronalLoss/NeuronalLoss_48x48x117_RG.bytes` (copied from `D:\Unity\SRD_test\Assets\Volume`, RG16: R = `neuronal_loss_roi_smooth` grey tissue, G = `neuronal_loss_inverse_roi` pink/purple signal), drawn by `Brain/NeuronalLossVolume` (Built-in port of SRD_test's URP shader, same numbers), true voxel proportions, yaw 45°, tilt 12°, `blockLength` 0.3, **not rotating** (`spinDegreesPerSecond` 0), white bold-italic "Neuronal loss / Stroke tissue · 3D histology stack" card. SRD_test's arrow is available (`showArrow`) but off.
+- The block is **SRD_test's neuronal-loss block**: `StreamingAssets/NeuronalLoss/NeuronalLoss_48x48x117_RG.bytes` (copied from `D:\Unity\SRD_test\Assets\Volume`, RG16: R = `neuronal_loss_roi_smooth` grey tissue, G = `neuronal_loss_inverse_roi` pink/purple signal), drawn by `Brain/NeuronalLossVolume` (Built-in port of SRD_test's URP shader, same numbers), true voxel proportions, yaw 45°, tilt 12°, `blockLength` **0.2** (was 0.3; reduced 2026-10-02 at the user's request; the label card scales with it), **not rotating** (`spinDegreesPerSecond` 0), white bold-italic "Neuronal loss / Stroke tissue · 3D histology stack" card. SRD_test's arrow is available (`showArrow`) but off.
 - Source .npy (not used at runtime): `D:\Unity\new\npy_neuronal_loss\neuronal_loss_{roi_smooth,inverse_roi}_133-181_81-129.npy`, float32 (117, 48, 48). The ROI is x 133-181, y 81-129 of hb02 **L6** (354×194), all sections (checked: 77 % tissue vs 9-14 % for the swapped box). Axis 0 (117) spans all 485 sections (both maps ≈ 0 at slice 56 ≈ the midline gap) — *inferred*.
 - **Final block pose you set yourself**: at runtime the block's final pose is the GameObject **`NeuronalLossBlock`** (top level in the Hierarchy, Play mode only). Once the block is in place the mouse/keyboard move **the block** (`controlsMoveBlock`; **M** switches to the brain and back; WASD/QE move, arrows/right-drag rotate, +/-/scroll scale); **K** copies `finalPosition / finalEuler / finalScale` to the clipboard and Console. Put those in the fields and tick `useCustomFinal` to make them permanent. *The user was about to choose these values; none are set yet.*
 - **Seek bar** `UI/TimelineTransportUI.cs` (port of SRD_test's `StoryTransportUI`, added automatically): play/pause, scrubbable bar with a tick per step, time and step name, on the panel near the bottom edge. Keys: **Space** play/pause, **R** restart, **, .** ±1 s (hold to scrub), **[ ]** ±5 s, **Home/End**, **H/T** hide/show. While the bar is dragged `TimelineTransportUI.PointerCaptured` makes `ModelMoveController` ignore the mouse (so a drag never moves the brain).
 
+### `TimelineRecorder` — the video (`Rendering/TimelineRecorder.cs`, 2026-10-02)
+On the `NeuronalLossSequence` GameObject. Records the whole timeline to `BrainVolumeSRD/Recordings/neuronal_loss_<yyyyMMdd_HHmmss>.mp4` (gitignored) with `UnityEditor.Media.MediaEncoder` — **Editor only**.
+- `recordOnPlay` (on): records once automatically as soon as the brain is loaded and the timeline is ready; **F10** records again from the start.
+- View: the SRD's `WatcherCamera` (head pose between the eyes, off-axis projection onto the panel), copied every frame into a hidden `RecordCamera` that renders into a RenderTexture; `width` 1920, height from the panel's aspect, `fps` 30, `tail` 1.5 s after the end (≈ 20 s total). Without an SRD manager: fallback camera looking along world +Z at the timeline's `volume`.
+- `Time.captureFramerate` = fps while recording, so the timeline advances exactly 1/fps per frame regardless of render speed. The seek bar is hidden during recording and restored after.
+- Console: `[Record] <s> s, <w>x<h> @ 30 fps, SRD watcher view -> <path>` at the start, `[Record] Saved N frames to <path>` at the end.
+- *Not yet run.* Unknowns: whether the watcher camera's pose/projection are updated with "Run Without Spatial Reality Display" on; whether the frames come out flipped or with wrong gamma (the ReadPixels/MediaEncoder path is copied from `BrainShowcase`, which was never run either).
+
 ### Other scripts added 2026-10-01
-- `Rendering/BrainShowcase.cs`: 30 s scripted orbit/slice of the fused volume with MP4 recording (`UnityEditor.Media.MediaEncoder`, Editor only, to `BrainVolumeSRD/Recordings/`). **P** preview, **F10** record. Not in any scene (add it to a GameObject to use). Written for the earlier "video" request; never recorded.
+- `Rendering/BrainShowcase.cs`: 30 s scripted orbit/slice of the fused volume with MP4 recording (`UnityEditor.Media.MediaEncoder`, Editor only, to `BrainVolumeSRD/Recordings/`). **P** preview, **F10** record. Not in any scene (add it to a GameObject to use). Written for the earlier "video" request; never recorded. Superseded by `TimelineRecorder` for the NeuronalLossScene video (both use F10 — don't put both in one scene).
 - `UI/UiKit.cs`: tiny world-space uGUI builders.
 - `ModelMoveController.cs`: one-line guard for the seek bar (above).
 
@@ -290,7 +300,7 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 
 ### Unity
 1. Open `brain-streaming/unity/BrainVolumeSRD` in **6000.3.25f1**.
-2. `Assets/Scenes/NeuronalLossScene.unity` -> Play: the timeline runs (Space/R/seek bar). `SampleScene.unity` = brain only (C slices).
+2. `Assets/Scenes/NeuronalLossScene.unity` -> Play: the timeline runs (Space/R/seek bar) and is recorded to `Recordings/neuronal_loss_*.mp4` (untick `recordOnPlay` on `TimelineRecorder` to just watch; F10 records again). `SampleScene.unity` = brain only (C slices).
 3. Without an SRD attached, the plugin's "Run Without Spatial Reality Display" setting must be on (Project Settings ▸ Spatial Reality Display, stored in `SRDProjectSettings.asset`).
 
 ---
@@ -314,12 +324,10 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 
 ## 9. Working-tree state (2026-10-02, branch `brick_L0`)
 
-**Uncommitted** (2026-10-01 late / 2026-10-02):
-- Brick shader -> FusedRaymarch look + step-length opacity correction + clip box: `Rendering/SRDBrickRaymarch.shader`, `SRD/BrickVolumeLoader.cs`, `SRD/BrickStreamer.cs` (per-brick values only).
-- Timeline drives the bricked `Brain`: new `Rendering/ISliceableVolume.cs` (+ .meta), `Rendering/FusedVolumeLoader.cs` (implements it), `Rendering/NeuronalLossSequence.cs` (`volume` field, `FindVolume`), `Scenes/NeuronalLossScene.unity` (the user's `Brain` GameObject, `FusedVolume` inactive, block-controls fields).
-- `BrainVolumeSRD.slnx` — Unity/VS regenerated, whitespace only; leave out.
+**Committed and pushed** as `25eb342` on `origin/brick_L0` (2026-10-02): the brick shader -> FusedRaymarch look + step-length opacity + clip box (`SRDBrickRaymarch.shader`, `BrickVolumeLoader.cs`, `BrickStreamer.cs`), `ISliceableVolume` + timeline on the bricked `Brain`, start pose, straight block path, `blockLength` 0.2, `TimelineRecorder` (+ hand-written `.meta`, guid `b36b0f12e39546db87e586ba305b7558`), the scene edits and this file.
+**Uncommitted**: only `BrainVolumeSRD.slnx` — Unity/VS regenerated, whitespace only; leave out.
 
-**Compile status**: all of the above compiled without errors (Editor.log, 2026-10-02 10:36). The one Play run since logged `[Loss] No active brain volume (BrickVolumeLoader or FusedVolumeLoader) in the scene.` with **no `[Bricks]` line at all** in that session, i.e. `BrickVolumeLoader` never started — most likely `Brain` was switched off in the Editor during that run (the saved scene has it active). Re-check: Brain active, press Play in `NeuronalLossScene`, expect `[Bricks] hb02_fused L2: loaded 24/24 bricks` and `[Loss] Timeline drives 'Brain' (BrickVolumeLoader)`.
+**Compile / run status**: the brick shader + `ISliceableVolume` work compiled without errors (Editor.log, 2026-10-02 10:36). The user saw the block's (then curved) path in the Editor and liked it. The **straight path**, the start pose, `blockLength` 0.2 / brain moved back, `TimelineRecorder` and the scene edits (made directly in the `.unity` YAML while the Editor was open) have **not been compiled or played yet**. On the next Play in `NeuronalLossScene` expect: `[Bricks] hb02_fused L2: loaded 24/24 bricks`, `[Loss] Timeline drives 'Brain' (BrickVolumeLoader)`, `[Record] ... SRD watcher view -> ...mp4`, `[Record] Saved N frames ...`. If Unity asks to reload the scene, reload (an Editor-side save would overwrite the YAML edits).
 
 **Stash**: `stash@{0}` "brick_L0 Unity-generated slnx + packages-lock before merging neuro_version" — regenerated files, normally safe to drop.
 **Backup**: 16 `.meta` files Unity had regenerated on brick_L0 before the merge are in the Claude scratchpad (`brick_L0_untracked_backup`); the tracked versions from neuro_version replaced them. Not needed unless a GUID problem shows up.
@@ -328,12 +336,12 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 
 ## 10. Open issues and suggested next steps
 
-1. **Run the uncommitted Brain/timeline work** with `Brain` active (§9), then commit it on brick_L0.
+1. **Play `NeuronalLossScene` once** (§9): check it compiles, the bricked Brain loads and starts at the start pose, the smaller block stays in frame, and the MP4 in `Recordings/` looks right (framing, orientation, colours). If the block still leaves the frame: lower `sideDistance`/`comeOut`, or move `startPosition.z` further back (e.g. −0.45).
 2. **Set the neuronal-loss block's final transform**: in Play press End (block in place), move `NeuronalLossBlock` or edit it in the Inspector, press K, put the values in `finalPosition/finalEuler/finalScale` with `useCustomFinal` on.
 3. **Seam planes on the bricked brain**: if visible, add black-to-white + the seam filter (port `FusedVolumeLoader.RemoveSeams`) to `tools/prebrick_srd.py` and re-brick.
-4. **Brain vs FusedVolume placement**: `Brain` sits at a different position/scale from `FusedVolume`; the block's computed end pose follows the brain, but `pointOnCut` / `sideDistance` / `comeOut` were tuned on FusedVolume's screenshots.
+4. **Block placement on the bricked Brain**: `pointOnCut` / `sideDistance` / `comeOut` were tuned on FusedVolume's screenshots. `Brain` now uses the same scale (1.4) and the user's start pose, so they should carry over, but check `pointOnCut` lands on the cortex of the bricked brain.
 5. **Which side is the left hemisphere** is still *inferred* (section 0 faces the viewer at Y = 360). If it is the right one, set `endY` = 180.
-6. **Video**: `BrainShowcase` records the old orbit, not this timeline. If a video of NeuronalLossScene is wanted, point F10 recording at `NeuronalLossSequence` (it is already time-driven, so `Time.captureFramerate` recording fits).
+6. **Video**: done in code (`TimelineRecorder`, §6) but no video has been produced yet. If the watcher view is wrong without the display, switch to the fallback camera (or add a fixed camera pose to `TimelineRecorder`).
 7. **Push `neuro_version`** if anyone still works from that branch.
 8. Nothing has been **built to a player** or **seen on the real ELF-SR2**; Build Settings has no scenes.
 9. From the first version, still open: stale 0.5 µm voxel text (§2), `/dashboard` serves the Gen-1 viewer, pick one port/address convention, document the T1 data path, WebSocket transport / multi-GPU / occupancy scan.
@@ -350,6 +358,8 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 | ROI of the .npy files = L6 x 133-181, y 81-129 | Tissue-overlap test (77 % vs 9-14 %); the in-plane transpose could not be decided from data |
 | Timeline, block, seek bar, centre/side placements, Y-only rotation | Compiled without errors in the Editor; behaviour from the user's Play-mode screenshots/feedback |
 | Brick shader look + timeline on `Brain` (2026-10-02) | Compiled without errors; **not yet seen running** (the only Play run had Brain inactive, see §9) |
+| Block coming out of the cut face | User saw the curved version in the Editor ("coming out is nice") and asked for a straight track |
+| Straight path, start pose, `blockLength` 0.2, brain moved back, `TimelineRecorder`, scene YAML edits | Written and pushed; **not compiled or run** |
 | SRD_test reference look | From `D:\Unity\SRD_test\Captures\neuronal_block_final.png` / `neuronal_loss_pose.png` (the .mp4 was not viewed) |
 | Server state, Gen-1, browser clients, streamed path | As in the first version: read from code/docs, not re-run (except `/api/health` and `/api/label_chunk` on 2026-10-01) |
 | Real SRD display, player build | **Unknown / not done** |

@@ -24,6 +24,10 @@ namespace BrainVolume.SRD
         public string datasetName = "hb02_fused";
         [Tooltip("Pyramid level to load as the base. Must be present in index.json.")]
         public int level = 3;
+        [Tooltip("All bricks of the level stay in GPU memory at once. If the level is bigger than this (MB), the " +
+                 "finest level that fits is loaded instead. 0 = auto: 70% of the GPU's memory. " +
+                 "(hb02: L1 = 32 GB, L2 = 8 GB, L3 = 2 GB; an RTX 3090 has 24 GB.)")]
+        public int vramBudgetMB = 0;
 
         [Header("Placement")]
         [Tooltip("Unity units per mm. 0.0025 -> a ~180 mm brain is ~0.45 units (fits the SRD box).")]
@@ -48,6 +52,23 @@ namespace BrainVolume.SRD
         [Range(0f, 1f)] public float jitter = 1f;
         [Range(0f, 0.2f)] public float emptyCut = 0.04f;
         public bool flipX, flipY, flipZ;
+
+        [Header("Tissue mask (removes the stitching-seam planes)")]
+        [Tooltip("The bricks are BC3-compressed, so FusedVolumeLoader's seam filter cannot run on them. Instead a " +
+                 "whole-volume tissue mask is built from an exported fused level (black-to-white + the same seam " +
+                 "filter + saturation >= saturationLow), and opacity outside it is zero. Off = raw bricks (planes visible).")]
+        public bool useTissueMask = true;
+        [Tooltip("Exported level under StreamingAssets used for the mask (<name>.json + .raw, RGB24, same extent as the bricks). " +
+                 "L5 = 708x388x485, 0.256 mm.")]
+        public string maskSource = "Fused/hb02_L5";
+        [Tooltip("Seam filter: opening width (mm) that cuts the thin seam lines loose (FusedVolumeLoader.seamFilterMm).")]
+        [Range(0f, 4f)] public float seamFilterMm = 2.5f;
+        [Tooltip("Seam filter: pieces without a core this wide (mm) are removed whole (FusedVolumeLoader.seamCoreMm).")]
+        [Range(0f, 8f)] public float seamCoreMm = 4f;
+        [Tooltip("Grow the mask by this much (mm) so the finer bricks keep their full tissue edge.")]
+        [Range(0f, 3f)] public float maskGrowMm = 0.3f;
+
+        Texture3D _mask;
 
         public int BrickCount => _bricks.Count;
         public bool Loaded => _bricks.Count > 0;
@@ -113,8 +134,29 @@ namespace BrainVolume.SRD
             LevelJson lvl = null;
             if (idx.levels != null)
                 foreach (var l in idx.levels) if (l.level == level) { lvl = l; break; }
-            if (lvl == null) { Debug.LogError($"[Bricks] level {level} not in index (have " +
-                $"{(idx.levels != null ? idx.levels.Length : 0)} levels)."); return; }
+            if (lvl == null)
+            {
+                string have = idx.levels != null ? string.Join(", ", System.Array.ConvertAll(idx.levels, l => "L" + l.level)) : "none";
+                Debug.LogError($"[Bricks] level {level} not in {indexPath} (have {have}). If its bricks were copied " +
+                               "later, add the level to index.json (re-run prebrick_srd.py with all levels).");
+                return;
+            }
+
+            // the whole level must fit in GPU memory: otherwise fall back to the finest level that does
+            long budget = (vramBudgetMB > 0 ? vramBudgetMB : (long)(SystemInfo.graphicsMemorySize * 0.7f)) << 20;
+            if (budget > 0 && LevelBytes(lvl) > budget)
+            {
+                LevelJson fit = null;
+                foreach (var l in idx.levels)
+                    if (l.level > level && LevelBytes(l) <= budget && (fit == null || l.level < fit.level)) fit = l;
+                string msg = $"[Bricks] L{level} needs {LevelBytes(lvl) >> 20:N0} MB of GPU memory but the budget is " +
+                             $"{budget >> 20:N0} MB (GPU {SystemInfo.graphicsMemorySize:N0} MB). ";
+                if (fit == null) { Debug.LogError(msg + "No level fits."); return; }
+                Debug.LogWarning(msg + $"Loading L{fit.level} ({LevelBytes(fit) >> 20:N0} MB) instead. " +
+                                 "Finer levels need streaming (BrickStreamer) or a cropped region.");
+                lvl = fit;
+                level = fit.level;
+            }
 
             float[] ext = lvl.extent_mm != null && lvl.extent_mm.Length == 3 ? lvl.extent_mm : idx.world_extent_mm;
             if (ext != null && ext.Length == 3) _volMm = new Vector3(ext[0], ext[1], ext[2]);
@@ -127,6 +169,95 @@ namespace BrainVolume.SRD
             Debug.Log($"[Bricks] {idx.name} L{level}: loaded {ok}/{lvl.bricks.Length} bricks " +
                       $"(grid {(lvl.grid != null ? lvl.grid[0] + "x" + lvl.grid[1] : "?")}), " +
                       $"unitsPerMm={unitsPerMm}.");
+            if (useTissueMask) BuildMask();
+        }
+
+        [System.Serializable] class RawMeta { public int width, height, depth, channels; public string format; public float[] voxelSizeMM, sizeMM; }
+
+        // Whole-volume tissue mask (R8, 255 = tissue) from an exported RGB level, cleaned exactly like
+        // FusedVolumeLoader cleans its volume (the user confirmed that removes the seam planes), then
+        // grown by maskGrowMm. Sampled by the shader at the brick sample's whole-volume position.
+        void BuildMask()
+        {
+            string json = Path.Combine(Application.streamingAssetsPath, maskSource + ".json");
+            string rawPath = Path.Combine(Application.streamingAssetsPath, maskSource + ".raw");
+            if (!File.Exists(json) || !File.Exists(rawPath))
+            {
+                Debug.LogWarning($"[Bricks] Tissue mask source {maskSource}(.json/.raw) missing -- seam planes stay visible.");
+                return;
+            }
+            var meta = JsonUtility.FromJson<RawMeta>(File.ReadAllText(json));
+            int w = meta.width, h = meta.height, d = meta.depth;
+            if (meta.channels != 3 || new FileInfo(rawPath).Length != (long)w * h * d * 3 || meta.voxelSizeMM == null)
+            {
+                Debug.LogWarning($"[Bricks] Tissue mask source {maskSource}.raw is not a complete RGB24 {w}x{h}x{d} -- no mask.");
+                return;
+            }
+            if (meta.sizeMM != null && meta.sizeMM.Length == 3 &&
+                (Mathf.Abs(meta.sizeMM[0] - _volMm.x) > 1f || Mathf.Abs(meta.sizeMM[1] - _volMm.y) > 1f || Mathf.Abs(meta.sizeMM[2] - _volMm.z) > 1f))
+                Debug.LogWarning($"[Bricks] Mask extent {meta.sizeMM[0]}x{meta.sizeMM[1]}x{meta.sizeMM[2]} mm differs from the bricks' {_volMm} -- mask may be misaligned.");
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            byte[] raw = File.ReadAllBytes(rawPath);
+            FusedVolumeLoader.BlackToWhite(raw, Mathf.RoundToInt(emptyCut * 255f));
+            int satCut = Mathf.RoundToInt(saturationLow * 255f);
+            int Rad(float mm, float vox) => Mathf.Max(0, Mathf.CeilToInt(0.5f * (mm / vox - 1f)));
+            float vx = meta.voxelSizeMM[0], vy = meta.voxelSizeMM[1], vz = meta.voxelSizeMM[2];
+            long removed = seamFilterMm > 0f
+                ? FusedVolumeLoader.RemoveSeams(raw, w, h, d, Rad(seamFilterMm, vx), Rad(seamFilterMm, vy),
+                                                Rad(seamCoreMm, vx), Rad(seamCoreMm, vy), satCut)
+                : 0;
+
+            // tissue = saturation >= satCut, then grow in-plane per section and across sections
+            int n = w * h;
+            var mask = new byte[(long)n * d];
+            int gx = Mathf.RoundToInt(maskGrowMm / vx), gy = Mathf.RoundToInt(maskGrowMm / vy), gz = Mathf.RoundToInt(maskGrowMm / vz);
+            System.Threading.Tasks.Parallel.For(0, d, () => (new byte[n], new byte[n]), (z, _, buf) =>
+            {
+                var (m, tmp) = buf;
+                long b3 = (long)z * n * 3;
+                for (int i = 0; i < n; i++)
+                {
+                    long p = b3 + (long)i * 3;
+                    int r = raw[p], g = raw[p + 1], bl = raw[p + 2];
+                    int mx = Mathf.Max(r, Mathf.Max(g, bl)), mn = Mathf.Min(r, Mathf.Min(g, bl));
+                    m[i] = (byte)(mx - mn >= satCut ? 1 : 0);
+                }
+                if (gx > 0 || gy > 0)
+                {
+                    FusedVolumeLoader.RunX(m, tmp, w, h, gx, false);
+                    FusedVolumeLoader.RunY(tmp, m, w, h, gy, false);
+                }
+                long b1 = (long)z * n;
+                for (int i = 0; i < n; i++) mask[b1 + i] = (byte)(m[i] != 0 ? 255 : 0);
+                return buf;
+            }, _ => { });
+            raw = null;
+            if (gz > 0)
+            {
+                // grow across sections: any tissue within gz sections
+                var src = (byte[])mask.Clone();
+                System.Threading.Tasks.Parallel.For(0, d, z =>
+                {
+                    int z0 = Mathf.Max(0, z - gz), z1 = Mathf.Min(d - 1, z + gz);
+                    long o = (long)z * n;
+                    for (int i = 0; i < n; i++)
+                    {
+                        if (src[o + i] != 0) continue;
+                        for (int zz = z0; zz <= z1; zz++)
+                            if (src[(long)zz * n + i] != 0) { mask[o + i] = 255; break; }
+                    }
+                });
+            }
+
+            _mask = new Texture3D(w, h, d, TextureFormat.R8, false)
+            {
+                name = "BrickTissueMask", wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear,
+            };
+            _mask.SetPixelData(mask, 0);
+            _mask.Apply(false, true);
+            Debug.Log($"[Bricks] Tissue mask from {maskSource} ({w}x{h}x{d}): seam filter cleared {removed:N0} voxels, " +
+                      $"grown {maskGrowMm} mm, {sw.ElapsedMilliseconds} ms.");
         }
 
         bool TryLoadBrick(string dir, BrickJson b, out Brick brick)
@@ -187,6 +318,9 @@ namespace BrainVolume.SRD
             material.SetFloat("_Jitter", jitter);
             material.SetFloat("_EmptyCut", emptyCut);
             material.SetVector("_Flip", new Vector4(flipX ? 1 : 0, flipY ? 1 : 0, flipZ ? 1 : 0, 0));
+            bool masked = useTissueMask && _mask != null;
+            material.SetFloat("_UseMask", masked ? 1f : 0f);
+            if (masked) material.SetTexture("_MaskTex", _mask);
 
             // back-to-front (premultiplied OVER): sort by distance to camera, far first.
             Matrix4x4 l2w = transform.localToWorldMatrix;
@@ -212,13 +346,19 @@ namespace BrainVolume.SRD
                 material.SetVector("_TexOffset", brk.texOffset);
                 material.SetVector("_TexSize", brk.texSize);
                 material.SetVector("_BrickToVol", brk.brickToVol);
+                material.SetVector("_BrickMinVol", brk.brickMinVol);
                 material.SetPass(0);
                 Graphics.DrawMeshNow(_cube, l2w * brk.local);
             }
             Drawn?.Invoke(cam);
         }
 
-        void OnDestroy() { foreach (var b in _bricks) if (b.tex != null) Destroy(b.tex); _bricks.Clear(); }
+        void OnDestroy()
+        {
+            foreach (var b in _bricks) if (b.tex != null) Destroy(b.tex);
+            _bricks.Clear();
+            if (_mask != null) Destroy(_mask);
+        }
 
         static bool FormatOf(string s, out TextureFormat fmt)
         {
@@ -230,6 +370,15 @@ namespace BrainVolume.SRD
                 case "RGB24": fmt = TextureFormat.RGB24; return true;
                 default: fmt = TextureFormat.RGBA32; return false;
             }
+        }
+
+        static long LevelBytes(LevelJson l)
+        {
+            long sum = 0;
+            if (l.bricks != null)
+                foreach (var b in l.bricks)
+                    if (b.stored != null && FormatOf(b.tex_format, out var f)) sum += ExpectedBytes(b.stored[0], b.stored[1], b.stored[2], f);
+            return sum;
         }
 
         static long ExpectedBytes(int dx, int dy, int dz, TextureFormat fmt)

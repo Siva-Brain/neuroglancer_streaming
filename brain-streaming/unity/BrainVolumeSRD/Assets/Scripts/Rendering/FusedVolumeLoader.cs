@@ -364,7 +364,7 @@ namespace BrainVolume
 
         // RGB voxels whose brightest channel is below `cut` -> 255,255,255. Parallel
         // over 1 MB-ish slabs; L4 (1.6 GB) takes about a second.
-        static long BlackToWhite(byte[] raw, int cut)
+        internal static long BlackToWhite(byte[] raw, int cut)
         {
             long voxels = raw.LongLength / 3;
             const long Slab = 1 << 18;                          // voxels per task
@@ -395,7 +395,7 @@ namespace BrainVolume
         // thick core disappears whole, while the brain keeps every fine edge the opening
         // left. Erode/dilate are separable running-window counts (O(N) at any radius).
         // Parallel over sections.
-        static long RemoveSeams(byte[] raw, int w, int h, int d, int rx, int ry, int cx, int cy, int satCut)
+        internal static long RemoveSeams(byte[] raw, int w, int h, int d, int rx, int ry, int cx, int cy, int satCut)
         {
             long total = 0;
             System.Threading.Tasks.Parallel.For(0, d,
@@ -459,7 +459,7 @@ namespace BrainVolume
 
         // 1D window of half-width r along x. erode: out = 1 iff all in-window are 1
         // (window clipped at the edges); dilate: out = 1 iff any in-window is 1.
-        static void RunX(byte[] src, byte[] dst, int w, int h, int r, bool erode)
+        internal static void RunX(byte[] src, byte[] dst, int w, int h, int r, bool erode)
         {
             for (int y = 0; y < h; y++)
             {
@@ -475,7 +475,7 @@ namespace BrainVolume
             }
         }
 
-        static void RunY(byte[] src, byte[] dst, int w, int h, int r, bool erode)
+        internal static void RunY(byte[] src, byte[] dst, int w, int h, int r, bool erode)
         {
             for (int x = 0; x < w; x++)
             {

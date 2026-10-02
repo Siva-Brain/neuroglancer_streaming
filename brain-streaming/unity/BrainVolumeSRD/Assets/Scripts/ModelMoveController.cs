@@ -36,6 +36,10 @@ using SRD.Utils;
 [DisallowMultipleComponent]
 public class ModelMoveController : MonoBehaviour
 {
+    [Header("Model Initial Position (R)")]
+    public Vector3 initialPosition;
+    public Quaternion initialRotation;
+    public Vector3 initScale;
     [Header("Keyboard translation (WASD / QE)")]
     [Tooltip("Metres per second at SRDViewSpaceScale 1. Multiplied by the view-space scale when the toggle below is on.")]
     public float moveSpeed = 0.25f;
@@ -94,6 +98,11 @@ public class ModelMoveController : MonoBehaviour
         _srdManager = SRDSceneEnvironment.GetSRDManager();
         _renderers = GetComponentsInChildren<Renderer>(true);
         _startScale = transform.localScale;
+
+        //Inital Tramsform Values
+        initialPosition = transform.position;
+        initialRotation = transform.rotation;
+        initScale = transform.localScale;
     }
 
     void Update()
@@ -107,6 +116,18 @@ public class ModelMoveController : MonoBehaviour
         HandleArrowRotate(right, up);
         HandleMouse(right, up);
         HandleZoomKeys();
+
+        ResetModelTransform();
+    }
+
+    void ResetModelTransform()
+    {
+        if (Input.GetKey(KeyCode.R))
+        {
+            transform.position = initialPosition;
+            transform.rotation = initialRotation;
+            transform.localScale = initScale;
+        }
     }
 
     private float SpeedScale()

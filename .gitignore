@@ -50,3 +50,13 @@ brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Bricks/hb02_fused/
 brain-streaming/unity/BrainVolumeSRD/.vs
 # showcase videos (BrainShowcase F10)
 brain-streaming/unity/BrainVolumeSRD/Recordings/
+
+# Player builds (one exe folder per presentation scene, ~46 GB each with the bricks)
+brain-streaming/unity/BrainVolumeSRD/Builds/
+brain-streaming/unity/BrainVolumeSRD/Build_V1/
+
+# Density / probability maps (.npz; astrocyte_density 22 MB, fib_probability 2 MB) -- copy manually,
+# like the .raw volumes. StreamingAssets/Npz/ is the copy that ships in builds.
+brain-streaming/unity/npz_files/
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Npz/*.npz
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Npz/*.npz.meta

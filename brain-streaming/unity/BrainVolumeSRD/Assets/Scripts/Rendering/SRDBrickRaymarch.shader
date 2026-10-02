@@ -21,6 +21,9 @@ Shader "Brain/SRDBrickRaymarch"
     // against a reference of 1/_RefSteps, so a brick looks the same however many steps it
     // takes and however big it is (before, every brick took _Steps samples over its own
     // small box and over-accumulated).
+    // Tissue mask (_UseMask): the BC3 bricks still contain the stitching-seam planes, so
+    // BrickVolumeLoader builds a whole-volume mask from an exported level with the seam filter
+    // applied; samples outside it are transparent. Looked up at _BrickMinVol + q * _BrickToVol.
     Properties
     {
         _VolumeTex ("Volume (BC3/BC7/RGB)", 3D) = "" {}
@@ -41,6 +44,9 @@ Shader "Brain/SRDBrickRaymarch"
         _Flip ("Flip axes (x,y,z = 1 to mirror)", Vector) = (0, 0, 0, 0)
         _ClipMin ("Kept box min (brick unit cube, slicing)", Vector) = (0, 0, 0, 0)
         _ClipMax ("Kept box max (brick unit cube, slicing)", Vector) = (1, 1, 1, 0)
+        _MaskTex ("Whole-volume tissue mask (R8)", 3D) = "white" {}
+        _UseMask ("Use tissue mask", Float) = 0
+        _BrickMinVol ("Brick core min corner, whole-volume unit coords", Vector) = (0, 0, 0, 0)
         [Enum(UnityEngine.Rendering.CullMode)] _Cull ("Cull", Float) = 1  // 1 = Front
     }
     SubShader
@@ -64,6 +70,9 @@ Shader "Brain/SRDBrickRaymarch"
             float _SatLow, _SatHigh, _EmptyCut, _Density, _RefSteps, _Gamma, _Brightness, _Shade, _Jitter, _Steps;
             float4 _Flip;
             float4 _ClipMin, _ClipMax;   // part of this brick kept by the slice (loader converts the volume cut)
+            sampler3D _MaskTex;          // whole-volume tissue mask: 0 outside the tissue (seam planes)
+            float _UseMask;
+            float3 _BrickMinVol;         // brick core min corner in whole-volume unit coords
 
             struct v2f { float4 pos : SV_POSITION; float3 obj : TEXCOORD0; };
 
@@ -132,6 +141,11 @@ Shader "Brain/SRDBrickRaymarch"
                     float sat = mx - min(min(c.r, c.g), c.b);
                     float v = saturate((sat - _SatLow) * invRange);
                     if (v <= 0.0) continue;                            // white bg / grey
+                    if (_UseMask > 0.5)                                // outside the tissue = seam planes
+                    {
+                        v *= smoothstep(0.25, 0.75, tex3Dlod(_MaskTex, float4(_BrickMinVol + q * _BrickToVol, 0)).r);
+                        if (v <= 0.0) continue;
+                    }
                     float a0 = saturate(v * _Density);
                     float a = 1.0 - pow(max(1.0 - a0, 1e-4), stepK);   // step-length corrected
 
