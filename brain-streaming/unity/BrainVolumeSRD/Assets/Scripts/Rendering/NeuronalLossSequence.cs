@@ -84,6 +84,8 @@ namespace BrainVolume
         [Range(0, 3)] public int extraTurns = 0;
         [Tooltip("Off = the timeline ends after slicing (no neuronal-loss block).")]
         public bool showNeuronalLoss = true;
+        [Tooltip("Off = no Slice step: the brain stays whole (e.g. V4, where the fibres are shown inside it).")]
+        public bool slicing = true;
         [Range(0.05f, 0.95f)] public float clippingDepth = 0.3f;
         public float showBrain = 2.5f;
         [Tooltip("Seconds for the Y rotation (extra turns + the turn to the left sagittal view).")]
@@ -105,6 +107,13 @@ namespace BrainVolume
         public Vector3 splitLeftPosition = new Vector3(-0.36f, 0.49f, -0.57f);
         [Tooltip("Where the split brain (labels) ends up after the split, world space.")]
         public Vector3 splitRightPosition = new Vector3(0.36f, 0.49f, -0.57f);
+        [Tooltip("Optional third brain that also splits off (e.g. the BFI NIfTI as an NpzDensityVolume): hidden " +
+                 "until the Split step, then fades in and moves to splitThirdPosition, same size as the brain. Its " +
+                 "rotation and cut come from its own NpzDensityVolume.follow (set that to the brain).")]
+        public NpzDensityVolume splitThird;
+        public Vector3 splitThirdPosition = new Vector3(-0.5f, 0.49f, -0.3f);
+        [Tooltip("The brains' size at the end of the split, as a fraction of the start size (room for three side by side).")]
+        [Range(0.3f, 1f)] public float splitScale = 1f;
 
         [Header("Slice back")]
         [Tooltip("After the slice (and the neuronal-loss block, if shown), undo the cut.")]
@@ -125,7 +134,8 @@ namespace BrainVolume
         public bool recedeDuringGrow = false;
 
         [Header("Return to the start (after the hold)")]
-        [Tooltip("At the end: the block (and TimelineDensityOverlay maps) fly back into the cut face (Combine), then " +
+        [Tooltip("At the end: the block (and TimelineDensityOverlay maps) fly back into the cut face and split-off " +
+                 "brains slide back into the brain (Combine), then " +
                  "the brain turns back to its start rotation while the cut closes and it comes back from moving back " +
                  "(Return) -- the timeline ends exactly on the start pose, so a loop restarts seamlessly.")]
         public bool returnToStart = false;
@@ -215,11 +225,19 @@ namespace BrainVolume
 
         public struct Mark { public string name; public float start; }
         public Mark[] Marks { get; private set; } = new Mark[0];
+        /// <summary>Extra marks inside the hold (start = seconds after HoldStart), shown on the transport bar.
+        /// Fill in Awake (e.g. AxonRepairTimeline), before the phases are computed in Start.</summary>
+        [System.NonSerialized] public System.Collections.Generic.List<Mark> holdMarks = new System.Collections.Generic.List<Mark>();
+        /// <summary>Extra "loaded?" checks the timeline waits for before it starts (like splitThird). Fill in Awake.</summary>
+        [System.NonSerialized] public System.Collections.Generic.List<System.Func<bool>> waitFor = new System.Collections.Generic.List<System.Func<bool>>();
         public float TotalSeconds => returnToStart ? _tReturn + returnSeconds : _tEnd + hold;
         /// <summary>0 -> 1 while the block / maps fly back into the brain (Combine step), else 0.</summary>
         public float CombineAmount =>
             returnToStart && _time >= _tCombine ? EaseInOutCubic((_time - _tCombine) / Mathf.Max(0.01f, combineSeconds)) : 0f;
         public float Time => _time;
+        /// <summary>When the hold starts (everything else done): AxonRepairTimeline runs its stages from here.</summary>
+        public float HoldStart => _tEnd;
+        public float CombineStart => _tCombine;
         public bool IsPlaying => _playing;
         public bool Ready => _prepared;
         public void Play() { if (_time >= TotalSeconds) SeekTo(0f); _playing = true; }
@@ -345,7 +363,7 @@ namespace BrainVolume
             _tRotate = showBrain;
             _tSplit = _tRotate + rotate;
             _tSlice = _tSplit + (_split != null ? split : 0f);
-            _tRecede = _tSlice + slice;
+            _tRecede = _tSlice + (slicing ? slice : 0f);
             _tGrow = _tRecede + (recedeDuringGrow ? 0f : Mathf.Max(0f, recede));
             bool block = showNeuronalLoss && _tex != null;
             _tGrowEnd = block ? _tGrow + grow : _tGrow;
@@ -361,11 +379,12 @@ namespace BrainVolume
                 new Mark { name = "Rotate", start = _tRotate },
             };
             if (_split != null) marks.Add(new Mark { name = "Split", start = _tSplit });
-            marks.Add(new Mark { name = "Slice", start = _tSlice });
+            if (slicing) marks.Add(new Mark { name = "Slice", start = _tSlice });
             if (recede > 0f && !recedeDuringGrow) marks.Add(new Mark { name = "Brain back", start = _tRecede });
             if (block) marks.Add(new Mark { name = "Neuronal loss", start = _tGrow });
             if (sliceBack) marks.Add(new Mark { name = "Slice back", start = _tBack });
             if (finalTurnSeconds > 0f) marks.Add(new Mark { name = "Turn", start = _tTurn });
+            foreach (var m in holdMarks) marks.Add(new Mark { name = m.name, start = _tEnd + m.start });
             if (returnToStart)
             {
                 marks.Add(new Mark { name = "Combine", start = _tCombine });
@@ -418,6 +437,8 @@ namespace BrainVolume
         {
             if (_vol == null || !_vol.Loaded) return;
             if (!_prepared && _split != null && !_split.Loaded) return;   // start once both brains are in
+            if (!_prepared && splitThird != null && splitThird.isActiveAndEnabled && !splitThird.Loaded) return;
+            if (!_prepared) foreach (var ready in waitFor) if (!ready()) return;
             if (!_prepared) Prepare();
             if (_playing)
             {
@@ -536,21 +557,32 @@ namespace BrainVolume
                     tr.rotation = Quaternion.AngleAxis(finalTurnDegrees * Ease((t - _tTurn) / finalTurnSeconds), Vector3.up) * _sagittal;
                 else tr.rotation = _sagittal;
 
-                float cut = t < _tSlice ? 0f : clippingDepth * Ease((t - _tSlice) / slice);
+                float cut = t < _tSlice || !slicing ? 0f : clippingDepth * Ease((t - _tSlice) / slice);
                 if (sliceBack && t >= _tBack) cut = clippingDepth * (1f - Ease((t - _tBack) / sliceBackSeconds));
                 _vol.SlicePosition = cut * (1f - ret);
 
-                Vector3 basePos = _startPos;
+                Vector3 basePos = _startPos, baseScale = _startScale;
                 if (_split != null)
                 {
                     // both start where the brain is; after the turn they move apart, brain left, split brain right
-                    float s = t < _tSplit ? 0f : EaseInOutCubic((t - _tSplit) / split);
+                    // Combine (returnToStart): the brains slide back together, the split-off ones fading out
+                    float merge = CombineAmount;
+                    float s = (t < _tSplit ? 0f : EaseInOutCubic((t - _tSplit) / split)) * (1f - merge);
                     basePos = Vector3.Lerp(_startPos, splitLeftPosition, s);
                     tr.position = basePos;
+                    baseScale = _startScale * Mathf.Lerp(1f, splitScale, s);
+                    tr.localScale = baseScale;
                     _split.transform.position = Vector3.Lerp(_startPos, splitRightPosition, s);
-                    bool shown = t >= _tSplit;
+                    bool shown = t >= _tSplit && merge < 1f;
                     if (_splitRenderer.enabled != shown) _splitRenderer.enabled = shown;
-                    SplitOpacity = _splitOpacity * Mathf.Clamp01((t - _tSplit) / (0.4f * Mathf.Max(0.01f, split)));
+                    float fade = Mathf.Clamp01((t - _tSplit) / (0.4f * Mathf.Max(0.01f, split))) *
+                                 Mathf.Clamp01((1f - merge) / 0.4f);
+                    SplitOpacity = _splitOpacity * fade;
+                    if (splitThird != null)
+                    {
+                        splitThird.transform.position = Vector3.Lerp(_startPos, splitThirdPosition, s);
+                        splitThird.visibility = shown ? fade : 0f;
+                    }
                 }
                 if (recede > 0f)
                 {
@@ -558,7 +590,7 @@ namespace BrainVolume
                     float k = t < _tRecede ? 0f : EaseInOutCubic((t - _tRecede) / recede);
                     k *= 1f - ret;                                   // and comes forward again on Return
                     tr.position = basePos + recedeOffset * k;
-                    tr.localScale = _startScale * Mathf.Lerp(1f, recedeScale, k);
+                    tr.localScale = baseScale * Mathf.Lerp(1f, recedeScale, k);
                 }
 
                 UpdateControls(t);
@@ -570,6 +602,7 @@ namespace BrainVolume
                 Transform st = _split.transform;
                 st.rotation = tr.rotation;
                 st.localScale = tr.localScale;
+                if (splitThird != null) splitThird.transform.localScale = tr.localScale;   // same mm scale as the brain
                 _split.SliceFromHighZ = _vol.SliceFromHighZ;
                 _split.SlicePosition = _vol.SlicePosition;
             }

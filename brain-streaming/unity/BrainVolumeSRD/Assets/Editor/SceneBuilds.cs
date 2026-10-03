@@ -15,10 +15,101 @@ namespace BrainVolume.EditorTools
         [MenuItem("Brain/Build/Nissl and Labels V1")]
         public static void BuildNisslAndLabelsV1() => Build("Nissl and Labels V1");
 
+        // V1 three-way split: BFI (left), Nissl (middle), labels (right), smaller so the three fit side by side.
+        // At z -0.35 the viewer (0, 0.64, -1.62) sees about x +-0.70.
+        public static Vector3 V1BfiPosition = new Vector3(-0.47f, 0.49f, -0.35f);
+        public static Vector3 V1NisslPosition = new Vector3(0f, 0.49f, -0.35f);
+        public static Vector3 V1LabelsPosition = new Vector3(0.47f, 0.49f, -0.35f);
+        public static float V1SplitScale = 0.65f;
+
+        /// <summary>
+        /// V1: adds the BFI NIfTI (bfi/BFI_in_MRI_2.nii, shipped from StreamingAssets/Nifti) as a third split brain.
+        /// It follows the Nissl brain's rotation and cut; the timeline moves it left while Nissl goes to the
+        /// middle and the labels to the right.
+        /// </summary>
+        [MenuItem("Brain/Scenes/V1: add BFI (three-way split)")]
+        public static void AddBfiToV1()
+        {
+            if (EditorSceneManager.GetActiveScene().isDirty) EditorSceneManager.SaveOpenScenes();
+            var sc = EditorSceneManager.OpenScene("Assets/Scenes/Nissl and Labels V1.unity", OpenSceneMode.Single);
+            GameObject bfi = null, brain = null;
+            foreach (var go in sc.GetRootGameObjects())
+            {
+                if (go.name == "BFI") bfi = go;
+                if (go.name == "Brain") brain = go;
+            }
+            if (bfi == null)
+            {
+                bfi = new GameObject("BFI");
+                SceneManager.MoveGameObjectToScene(bfi, sc);
+                bfi.AddComponent<NpzDensityVolume>();
+            }
+            bfi.transform.SetPositionAndRotation(brain.transform.position, brain.transform.rotation);
+            bfi.transform.localScale = brain.transform.localScale;
+            var vol = bfi.GetComponent<NpzDensityVolume>();
+            var v = new SerializedObject(vol);
+            v.FindProperty("npzPath").stringValue = "bfi/BFI_in_MRI_2.nii";
+            v.FindProperty("fillGapMm").floatValue = 0f;          // a continuous volume, no section gaps to fill
+            v.FindProperty("inPlaneFillMm").floatValue = 0f;
+            v.FindProperty("percentileHigh").floatValue = 99.5f;
+            v.FindProperty("threshold").floatValue = 0.35f;       // values 0..1, tissue mostly 0.5..1
+            v.FindProperty("density").floatValue = 25f;
+            v.FindProperty("valueGamma").floatValue = 1.5f;
+            v.FindProperty("raySteps").intValue = 400;
+            v.FindProperty("shading").floatValue = 0.7f;
+            v.FindProperty("brightness").floatValue = 1.1f;
+            v.FindProperty("colorLow").colorValue = new Color(0.45f, 0.30f, 0.25f);
+            v.FindProperty("colorMid").colorValue = new Color(0.80f, 0.62f, 0.52f);
+            v.FindProperty("colorHigh").colorValue = new Color(1.00f, 0.92f, 0.85f);
+            v.FindProperty("follow").objectReferenceValue = brain.GetComponent<BrainVolume.SRD.BrickVolumeLoader>();
+            v.FindProperty("followRotation").boolValue = true;
+            v.FindProperty("followSlice").boolValue = true;
+            v.FindProperty("visibility").floatValue = 0f;
+            v.ApplyModifiedPropertiesWithoutUndo();
+
+            var seq = Object.FindFirstObjectByType<NeuronalLossSequence>();
+            var so = new SerializedObject(seq);
+            so.FindProperty("splitThird").objectReferenceValue = vol;
+            so.FindProperty("splitThirdPosition").vector3Value = V1BfiPosition;
+            so.FindProperty("splitLeftPosition").vector3Value = V1NisslPosition;    // the driven (Nissl) brain
+            so.FindProperty("splitRightPosition").vector3Value = V1LabelsPosition;
+            so.FindProperty("splitScale").floatValue = V1SplitScale;
+            // ending like V3: after the 360 turn the three slide back together (Combine) and the brain turns back to
+            // its start pose (Return), so the loop is seamless. 30 s: brain 2.5 + rotate 4 + split 3 + slice 5.5
+            // + 0.3 + slice back 5.5 + turn 5 + combine 2 + return 2.2 (no hold)
+            so.FindProperty("finalTurnSeconds").floatValue = 5f;
+            so.FindProperty("hold").floatValue = 0f;
+            so.FindProperty("returnToStart").boolValue = true;
+            so.FindProperty("combineSeconds").floatValue = 2f;
+            so.FindProperty("returnSeconds").floatValue = 2.2f;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorSceneManager.SaveScene(sc);
+            Debug.Log($"[SceneBuilds] V1: BFI {V1BfiPosition}, Nissl {V1NisslPosition}, labels {V1LabelsPosition}, split scale {V1SplitScale}.");
+        }
+
         [MenuItem("Brain/Build/NeuronalLoss Display V2")]
         public static void BuildNeuronalLossDisplayV2() => Build(V2);
 
         const string V2 = "NeuronalLoss Display V2";
+        // V2 brain start (the user's V1 transform, kept for V2)
+        public static Vector3 V2BrainStart = new Vector3(0.082f, 0.49f, -0.57f);
+
+        /// <summary>V2 ending only (no re-copy from V1): Combine + Return like V1/V3, still 30 s.</summary>
+        [MenuItem("Brain/Scenes/V2: return to start at the end")]
+        public static void SetV2ReturnToStart()
+        {
+            if (EditorSceneManager.GetActiveScene().isDirty) EditorSceneManager.SaveOpenScenes();
+            var sc = EditorSceneManager.OpenScene($"Assets/Scenes/{V2}.unity", OpenSceneMode.Single);
+            var seq = Object.FindFirstObjectByType<NeuronalLossSequence>();
+            var so = new SerializedObject(seq);
+            so.FindProperty("hold").floatValue = 3.2f;
+            so.FindProperty("returnToStart").boolValue = true;
+            so.FindProperty("combineSeconds").floatValue = 2.5f;
+            so.FindProperty("returnSeconds").floatValue = 2.5f;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            EditorSceneManager.SaveScene(sc);
+            Debug.Log($"[SceneBuilds] {V2}: returnToStart, hold 3.2 + combine 2.5 + return 2.5.");
+        }
 
         /// <summary>
         /// V2 = brain -> turn to the left sagittal view -> slice -> the neuronal-loss block (the two
@@ -38,24 +129,31 @@ namespace BrainVolume.EditorTools
             }
             var sc = EditorSceneManager.OpenScene(dst, OpenSceneMode.Single);
             foreach (var go in sc.GetRootGameObjects())
-                if (go.name == "FusedVolume" || go.name == "AstrocyteDensity") go.SetActive(false);
+                if (go.name == "FusedVolume" || go.name == "AstrocyteDensity" || go.name == "BFI") go.SetActive(false);
 
             var seq = Object.FindFirstObjectByType<NeuronalLossSequence>();
             var so = new SerializedObject(seq);
             so.FindProperty("splitVolume").objectReferenceValue = null;
+            so.FindProperty("splitThird").objectReferenceValue = null;    // V1's BFI
+            so.FindProperty("splitScale").floatValue = 1f;
+            so.FindProperty("startPosition").vector3Value = V2BrainStart;
             so.FindProperty("showNeuronalLoss").boolValue = true;
             so.FindProperty("clippingDepth").floatValue = 0.3f;
             so.FindProperty("sliceBack").boolValue = false;
             so.FindProperty("finalTurnSeconds").floatValue = 0f;
             so.FindProperty("loop").boolValue = true;
-            // 30 s: brain 3 + rotate 6 + slice 6 + grow 6 + label 0.2 + 0.6 + hold 8.2
+            // 30 s: brain 3 + rotate 6 + slice 6 + grow 6 + label 0.2 + 0.6 + hold 3.2 (-> 25)
+            // + combine 2.5 (the block flies back into the cut face) + return 2.5 (the brain turns back to its start pose)
             so.FindProperty("showBrain").floatValue = 3f;
             so.FindProperty("rotate").floatValue = 6f;
             so.FindProperty("slice").floatValue = 6f;
             so.FindProperty("grow").floatValue = 6f;
             so.FindProperty("labelDelay").floatValue = 0.2f;
             so.FindProperty("labelSeconds").floatValue = 0.6f;
-            so.FindProperty("hold").floatValue = 8.2f;
+            so.FindProperty("hold").floatValue = 3.2f;
+            so.FindProperty("returnToStart").boolValue = true;
+            so.FindProperty("combineSeconds").floatValue = 2.5f;
+            so.FindProperty("returnSeconds").floatValue = 2.5f;
             so.ApplyModifiedPropertiesWithoutUndo();
             var rec = seq.GetComponent<TimelineRecorder>();
             if (rec != null)
@@ -187,6 +285,100 @@ namespace BrainVolume.EditorTools
             o.FindProperty("cardScale").floatValue = 0.0006f;
             o.FindProperty("titleFontSize").intValue = 34;
             o.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        [MenuItem("Brain/Build/Axon Damage Repair V4")]
+        public static void BuildAxonDamageRepairV4() => Build(V4);
+
+        const string V4 = "Axon Damage Repair V4";
+
+        /// <summary>
+        /// V4 = the reference video npz_files/V4/axon_damage_repair_APP_GAP43_540p15.mp4 on the bricked brain:
+        /// brain (V3's centred start pose) -> turn to the left sagittal view -> (no slice) the brain fades to a
+        /// shell while the healthy fibres fade in -> APP+ damage spreads from the stroke -> GAP43+ repair grows
+        /// from the core -> all together -> Combine (fade out) + Return to the start pose; 30 s, loops.
+        /// The three maps (npz_files/V4/*.npz) are one AxonDamageRepairVolume, staged by AxonRepairTimeline.
+        /// </summary>
+        [MenuItem("Brain/Scenes/Create Axon Damage Repair V4")]
+        public static void CreateAxonDamageRepairV4()
+        {
+            string src = $"Assets/Scenes/{V3}.unity", dst = $"Assets/Scenes/{V4}.unity";
+            if (EditorSceneManager.GetActiveScene().isDirty) EditorSceneManager.SaveOpenScenes();
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(dst) == null && !AssetDatabase.CopyAsset(src, dst))
+            {
+                Debug.LogError($"[SceneBuilds] Could not copy {src} -> {dst}");
+                return;
+            }
+            AlwaysInclude("Brain/AxonDamageRepair");
+            var sc = EditorSceneManager.OpenScene(dst, OpenSceneMode.Single);
+            GameObject brain = null, axons = null;
+            foreach (var go in sc.GetRootGameObjects())
+            {
+                if (go.name == "AstrocyteDensity" || go.name == "FibProbability" || go.name == "FusedVolume" || go.name == "BFI")
+                    go.SetActive(false);
+                if (go.name == "Brain") brain = go;
+                if (go.name == "AxonDamageRepair") axons = go;
+            }
+            if (brain == null) { Debug.LogError("[SceneBuilds] V4: no Brain in " + src); return; }
+            if (axons == null)
+            {
+                axons = new GameObject("AxonDamageRepair");
+                SceneManager.MoveGameObjectToScene(axons, sc);
+            }
+            var vol = axons.GetComponent<AxonDamageRepairVolume>();
+            if (vol == null) vol = axons.AddComponent<AxonDamageRepairVolume>();   // (not ??: Unity fake-null)
+            var v = new SerializedObject(vol);
+            v.FindProperty("follow").objectReferenceValue = brain.GetComponent<BrainVolume.SRD.BrickVolumeLoader>();
+            v.ApplyModifiedPropertiesWithoutUndo();
+            var stages = axons.GetComponent<AxonRepairTimeline>();
+            if (stages == null) stages = axons.AddComponent<AxonRepairTimeline>();
+
+            var seq = Object.FindFirstObjectByType<NeuronalLossSequence>();
+            var so = new SerializedObject(seq);
+            so.FindProperty("showNeuronalLoss").boolValue = false;
+            so.FindProperty("slicing").boolValue = false;        // the fibres are shown inside the whole brain
+            so.FindProperty("recede").floatValue = 0f;
+            so.FindProperty("loop").boolValue = true;
+            so.FindProperty("returnToStart").boolValue = true;
+            // 30 s: brain 3 + rotate 5 (-> 8) + hold 17.5 (healthy 4 + APP 5.5 + GAP43 5 + together 3) (-> 25.5)
+            // + combine 2 (everything fades, the brain becomes solid) + return 2.5 (back to the start pose)
+            so.FindProperty("showBrain").floatValue = 3f;
+            so.FindProperty("rotate").floatValue = 5f;
+            so.FindProperty("hold").floatValue = 17.5f;
+            so.FindProperty("combineSeconds").floatValue = 2f;
+            so.FindProperty("returnSeconds").floatValue = 2.5f;
+            so.ApplyModifiedPropertiesWithoutUndo();
+            var st = new SerializedObject(stages);
+            st.FindProperty("timeline").objectReferenceValue = seq;
+            st.FindProperty("axons").objectReferenceValue = vol;
+            st.FindProperty("brain").objectReferenceValue = brain.GetComponent<BrainVolume.SRD.BrickVolumeLoader>();
+            st.ApplyModifiedPropertiesWithoutUndo();
+
+            var rec = seq.GetComponent<TimelineRecorder>();
+            if (rec != null)
+            {
+                var r = new SerializedObject(rec);
+                r.FindProperty("filePrefix").stringValue = "axon_damage_repair_v4";
+                r.ApplyModifiedPropertiesWithoutUndo();
+            }
+            EditorSceneManager.SaveScene(sc);
+            Debug.Log($"[SceneBuilds] {dst}: total {seq.showBrain + seq.rotate + seq.hold + seq.combineSeconds + seq.returnSeconds:F1} s.");
+        }
+
+        // Shader.Find only finds shaders in a build that something references (or that are always included).
+        static void AlwaysInclude(string shaderName)
+        {
+            var shader = Shader.Find(shaderName);
+            if (shader == null) { Debug.LogError("[SceneBuilds] Shader not found: " + shaderName); return; }
+            var gs = new SerializedObject(AssetDatabase.LoadAssetAtPath<Object>("ProjectSettings/GraphicsSettings.asset"));
+            var list = gs.FindProperty("m_AlwaysIncludedShaders");
+            for (int i = 0; i < list.arraySize; i++)
+                if (list.GetArrayElementAtIndex(i).objectReferenceValue == shader) return;
+            list.InsertArrayElementAtIndex(list.arraySize);
+            list.GetArrayElementAtIndex(list.arraySize - 1).objectReferenceValue = shader;
+            gs.ApplyModifiedPropertiesWithoutUndo();
+            AssetDatabase.SaveAssets();
+            Debug.Log("[SceneBuilds] Always Included Shaders += " + shaderName);
         }
 
         static void Build(string sceneName)

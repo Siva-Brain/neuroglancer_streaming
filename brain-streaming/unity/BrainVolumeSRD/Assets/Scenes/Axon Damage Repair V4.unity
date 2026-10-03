@@ -577,6 +577,106 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &1028835770
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1028835773}
+  - component: {fileID: 1028835772}
+  - component: {fileID: 1028835771}
+  m_Layer: 0
+  m_Name: FibProbability
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 0
+--- !u!114 &1028835771
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1028835770}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 03e045f096dbeea46bd5437d10df6018, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.TimelineDensityOverlay
+  timeline: {fileID: 2100000003}
+  appearAtMark: Neuronal loss
+  delay: 0
+  comeOutOfBrain: 1
+  fadeSeconds: 1.5
+  title: Fib
+  tagLine: 
+  cardColor: {r: 1, g: 1, b: 1, a: 1}
+  titleColor: {r: 0.04, g: 0.04, b: 0.06, a: 1}
+  tagColor: {r: 0.1, g: 0.1, b: 0.12, a: 1}
+  titleFontSize: 34
+  tagFontSize: 19
+  padding: 18
+  cardScale: 0.0006
+  labelGap: 0.012
+  labelDelay: 0.2
+  labelSeconds: 0.6
+--- !u!114 &1028835772
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1028835770}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7c1e4b9a2d5f4e8a9b3c6d0e1f2a3b4c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.NpzDensityVolume
+  npzPath: npz_files/fib_probability_HB02_0.24mm_0.9999.npz
+  arrayName: probability
+  affineName: index_to_physical_LPS_mm
+  voxelMmIfNoAffine: 0.24
+  downsample: 1
+  percentileHigh: 99.5
+  fillGapMm: 2
+  inPlaneFillMm: 0.75
+  unitsPerMm: 0.0025
+  mode: 0
+  raySteps: 600
+  threshold: 0.08
+  density: 40
+  valueGamma: 0.7
+  colorLow: {r: 0.85, g: 0.2, b: 0.1, a: 1}
+  colorMid: {r: 1, g: 0.5, b: 0.15, a: 1}
+  colorHigh: {r: 1, g: 0.9, b: 0.45, a: 1}
+  brightness: 1.3
+  shading: 0.5
+  jitter: 1
+  showBounds: 0
+  visibility: 1
+  follow: {fileID: 16342192}
+  relativeRotation: {x: 0.70710677, y: 0, z: 0.70710677, w: 0}
+  followRotation: 1
+  followSlice: 0
+--- !u!4 &1028835773
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1028835770}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0.018971864, y: -0.96931726, z: 0.08112326, w: 0.23126438}
+  m_LocalPosition: {x: 0.53, y: 0.7, z: -0.3}
+  m_LocalScale: {x: 0.85, y: 0.85, z: 0.85}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: -90, z: 0}
 --- !u!1 &1125990758
 GameObject:
   m_ObjectHideFlags: 0
@@ -683,76 +783,6 @@ Transform:
   m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
   m_LocalPosition: {x: -0, y: 0, z: -0}
   m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &1355977066
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 1355977068}
-  - component: {fileID: 1355977067}
-  m_Layer: 0
-  m_Name: BFI
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!114 &1355977067
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1355977066}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 7c1e4b9a2d5f4e8a9b3c6d0e1f2a3b4c, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.NpzDensityVolume
-  npzPath: bfi/BFI_in_MRI_2.nii
-  arrayName: density
-  affineName: index_to_physical_LPS_mm
-  voxelMmIfNoAffine: 0.24
-  downsample: 1
-  percentileHigh: 99.5
-  fillGapMm: 0
-  inPlaneFillMm: 0
-  unitsPerMm: 0.0025
-  mode: 0
-  raySteps: 400
-  threshold: 0.35
-  density: 25
-  valueGamma: 1.5
-  colorLow: {r: 0.45, g: 0.3, b: 0.25, a: 1}
-  colorMid: {r: 0.8, g: 0.62, b: 0.52, a: 1}
-  colorHigh: {r: 1, g: 0.92, b: 0.85, a: 1}
-  brightness: 1.1
-  shading: 0.7
-  jitter: 1
-  showBounds: 0
-  visibility: 0
-  follow: {fileID: 16342192}
-  relativeRotation: {x: 0.70710677, y: 0, z: 0.70710677, w: 0}
-  followRotation: 1
-  followSlice: 1
---- !u!4 &1355977068
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 1355977066}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0.5218822, y: -0.043947678, z: -0.8489394, w: 0.070777945}
-  m_LocalPosition: {x: 0.082, y: 0.49, z: -0.57}
-  m_LocalScale: {x: 1.35, y: 1.35, z: 1.35}
   m_ConstrainProportionsScale: 0
   m_Children: []
   m_Father: {fileID: 0}
@@ -871,6 +901,108 @@ GameObject:
   m_CorrespondingSourceObject: {fileID: 1275831002520144435, guid: 0d4a692a29b936c458e16d4ce61341a7, type: 3}
   m_PrefabInstance: {fileID: 1587403921}
   m_PrefabAsset: {fileID: 0}
+--- !u!1 &1662914401
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 1662914404}
+  - component: {fileID: 1662914403}
+  - component: {fileID: 1662914402}
+  m_Layer: 0
+  m_Name: AxonDamageRepair
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &1662914402
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1662914401}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 8cc4be02695a0d94e9868c3a98c3de84, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.AxonRepairTimeline
+  timeline: {fileID: 2100000003}
+  axons: {fileID: 1662914403}
+  brain: {fileID: 16342192}
+  healthySeconds: 4
+  appSeconds: 5.5
+  gapSeconds: 5
+  fadeSeconds: 2
+  shellOpacity: 0.2
+  appRadiusEnd: 65
+  gapRadiusEnd: 60
+  cardColor: {r: 1, g: 1, b: 1, a: 1}
+  titleColor: {r: 0.04, g: 0.04, b: 0.06, a: 1}
+  tagColor: {r: 0.1, g: 0.1, b: 0.12, a: 1}
+  titleFontSize: 34
+  tagFontSize: 19
+  legendFontSize: 17
+  padding: 18
+  cardScale: 0.0005
+  labelGap: 0.02
+--- !u!114 &1662914403
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1662914401}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: a6ffcd13be2d39e43bcf9038877c425b, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.AxonDamageRepairVolume
+  healthyPath: npz_files/V4/healthy_HB02_0.24mm.npz
+  appPath: npz_files/V4/app_HB02_0.24mm_damage.npz
+  gapPath: npz_files/V4/gap43_HB02_0.24mm_regeneration.npz
+  voxelMm: 0.24
+  downsample: 2
+  follow: {fileID: 16342192}
+  relativeRotation: {x: 0.70710677, y: 0, z: 0.70710677, w: 0}
+  unitsPerMm: 0.0025
+  raySteps: 500
+  density: 25
+  brightness: 2.2
+  jitter: 1
+  healthyColor: {r: 0.28, g: 0.42, b: 0.78, a: 1}
+  appLightColor: {r: 1, g: 0.62, b: 0.22, a: 1}
+  appDenseColor: {r: 0.95, g: 0.16, b: 0.1, a: 1}
+  gapColor: {r: 0.25, g: 1, b: 0.4, a: 1}
+  appLightFrom: 0.95
+  appDenseFrom: 1.2
+  gapBoost: 5
+  strokeCentreVoxel: {x: 236, y: 381, z: 312}
+  frontSoftMm: 14
+  frontNoiseMm: 9
+  visibility: 1
+  healthyAmount: 1
+  appRadiusMm: 1000
+  gapRadiusMm: 1000
+--- !u!4 &1662914404
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1662914401}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1733100001
 GameObject:
   m_ObjectHideFlags: 0
@@ -1067,7 +1199,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!114 &1836338544
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1224,48 +1356,49 @@ MonoBehaviour:
   loop: 1
   transportBar: 1
   useStartPose: 1
-  startPosition: {x: 0.082, y: 0.49, z: -0.57}
+  startPosition: {x: 0, y: 0.49, z: -0.57}
   startRotation: {x: 0.5218822, y: -0.043947678, z: -0.8489394, w: 0.070777945}
   startBrainScale: 1.35
   initialEuler: {x: 0, y: 270, z: 180}
   endY: 360
   extraTurns: 0
   showNeuronalLoss: 0
-  clippingDepth: 0.95
-  showBrain: 2.5
-  rotate: 4
-  slice: 5.5
-  grow: 4
+  slicing: 0
+  clippingDepth: 0.3
+  showBrain: 3
+  rotate: 5
+  slice: 6
+  grow: 6
   labelDelay: 0.2
   labelSeconds: 0.6
-  hold: 0
-  splitVolume: {fileID: 1836338544}
+  hold: 17.5
+  splitVolume: {fileID: 0}
   split: 3
-  splitLeftPosition: {x: 0, y: 0.49, z: -0.35}
-  splitRightPosition: {x: 0.47, y: 0.49, z: -0.35}
-  splitThird: {fileID: 1355977067}
-  splitThirdPosition: {x: -0.47, y: 0.49, z: -0.35}
-  splitScale: 0.65
-  sliceBack: 1
-  sliceBackDelay: 0.3
-  sliceBackSeconds: 5.5
+  splitLeftPosition: {x: -0.36, y: 0.49, z: -0.57}
+  splitRightPosition: {x: 0.36, y: 0.49, z: -0.57}
+  splitThird: {fileID: 0}
+  splitThirdPosition: {x: -0.5, y: 0.49, z: -0.3}
+  splitScale: 1
+  sliceBack: 0
+  sliceBackDelay: 1.5
+  sliceBackSeconds: 4
   recede: 0
   recedeOffset: {x: 0, y: 0, z: 0.35}
   recedeScale: 0.7
-  recedeDuringGrow: 0
+  recedeDuringGrow: 1
   returnToStart: 1
   combineSeconds: 2
-  returnSeconds: 2.2
-  finalTurnSeconds: 5
+  returnSeconds: 2.5
+  finalTurnSeconds: 0
   finalTurnDegrees: 360
   startScale: 0.02
   straightPath: 1
   arcTowardViewer: 0.3
   overshoot: 0.08
   showArrow: 0
-  blockLength: 0.2
+  blockLength: 0.27
   sideDistance: 0.2
-  comeOut: 0.3
+  comeOut: 0.1
   pivotYawDegrees: 45
   blockEuler: {x: 0, y: 90, z: 12}
   spinDegreesPerSecond: 0
@@ -1318,7 +1451,7 @@ MonoBehaviour:
   tail: 0
   fallbackFov: 35
   fallbackDistance: 1.6
-  filePrefix: nissl_labels_v1
+  filePrefix: axon_damage_repair_v4
 --- !u!1 &2100000010
 GameObject:
   m_ObjectHideFlags: 0
@@ -1346,8 +1479,8 @@ Transform:
   m_GameObject: {fileID: 2100000010}
   serializedVersion: 2
   m_LocalRotation: {x: 0.018971864, y: -0.96931726, z: 0.08112326, w: 0.23126438}
-  m_LocalPosition: {x: 0.36, y: 0.49, z: -0.57}
-  m_LocalScale: {x: 1.35, y: 1.35, z: 1.35}
+  m_LocalPosition: {x: 0.53, y: 0.32, z: -0.3}
+  m_LocalScale: {x: 0.85, y: 0.85, z: 0.85}
   m_ConstrainProportionsScale: 1
   m_Children: []
   m_Father: {fileID: 0}
@@ -1389,7 +1522,7 @@ MonoBehaviour:
   follow: {fileID: 16342192}
   relativeRotation: {x: 0.70710677, y: 0, z: 0.70710677, w: 0}
   followRotation: 1
-  followSlice: 1
+  followSlice: 0
 --- !u!114 &2100000013
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -1399,30 +1532,26 @@ MonoBehaviour:
   m_GameObject: {fileID: 2100000010}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: bdfcb8b0567055142b5af61639113695, type: 3}
+  m_Script: {fileID: 11500000, guid: 03e045f096dbeea46bd5437d10df6018, type: 3}
   m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::ModelMoveController
-  initialPosition: {x: 0, y: 0, z: 0}
-  initialRotation: {x: 0, y: 0, z: 0, w: 0}
-  initScale: {x: 0, y: 0, z: 0}
-  moveSpeed: 0.25
-  scaleSpeedWithViewSpace: 1
-  enableVertical: 1
-  leftDragTranslates: 1
-  metresPerPixel: 0.0015
-  arrowKeysRotate: 1
-  arrowDegreesPerSecond: 60
-  rightDragRotates: 1
-  degreesPerPixel: 0.25
-  zoomKeysEnabled: 1
-  zoomFactorPerSecond: 1.6
-  scrollZoomEnabled: 1
-  zoomFactorPerNotch: 1.1
-  minZoom: 0.25
-  maxZoom: 4
-  zoomAroundBoundsCenter: 1
-  invertPitch: 0
-  rotateAroundBoundsCenter: 1
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.TimelineDensityOverlay
+  timeline: {fileID: 2100000003}
+  appearAtMark: Neuronal loss
+  delay: 0
+  comeOutOfBrain: 1
+  fadeSeconds: 1.5
+  title: Astrocytes
+  tagLine: 
+  cardColor: {r: 1, g: 1, b: 1, a: 1}
+  titleColor: {r: 0.04, g: 0.04, b: 0.06, a: 1}
+  tagColor: {r: 0.1, g: 0.1, b: 0.12, a: 1}
+  titleFontSize: 34
+  tagFontSize: 19
+  padding: 18
+  cardScale: 0.0006
+  labelGap: 0.012
+  labelDelay: 0.2
+  labelSeconds: 0.6
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0
@@ -1441,4 +1570,5 @@ SceneRoots:
   - {fileID: 16342193}
   - {fileID: 2100000011}
   - {fileID: 976958539}
-  - {fileID: 1355977068}
+  - {fileID: 1028835773}
+  - {fileID: 1662914404}

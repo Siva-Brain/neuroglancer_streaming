@@ -21,6 +21,11 @@ namespace BrainVolume
     /// Unity local axes are x = Right (i), y = Superior (k), z = Anterior (j) (RAS -> Unity, no mirror);
     /// the shader swizzles the texture lookup accordingly. Voxel sizes come from the affine.
     ///
+    /// Also reads a single-file NIfTI-1 volume (.nii, 3-D float32, e.g. bfi/BFI_in_MRI_2.nii: 411x472x259,
+    /// 0.4 mm, values 0..1, 0 = background): voxel size from pixdim, scl_slope/inter applied. Its
+    /// RAS index axes (i -> Right, j -> Anterior, k -> Superior) match the .npz maps, so the same
+    /// relativeRotation lines it up with the brain. Builds look in StreamingAssets/Npz and /Nifti.
+    ///
     /// Values are mapped to 8 bits: 0 stays 0 (not sampled, transparent), the rest are scaled
     /// linearly up to the `percentileHigh` percentile of the non-zero values (two streaming passes over
     /// the 1.1 GB array: histogram, then quantise -- no full float copy in memory).
@@ -128,6 +133,7 @@ namespace BrainVolume
             {
                 Path.Combine(Application.streamingAssetsPath, p),
                 Path.Combine(Application.streamingAssetsPath, "Npz", Path.GetFileName(p)),
+                Path.Combine(Application.streamingAssetsPath, "Nifti", Path.GetFileName(p)),
                 Path.GetFullPath(Path.Combine(Application.dataPath, "..", "..", p)),
             };
             foreach (var c in candidates) if (File.Exists(c)) return c;
@@ -219,45 +225,63 @@ namespace BrainVolume
                            float fillGapMm, float inPlaneFillMm, float voxelMmIfNoAffine)
         {
             var r = new Result { voxelMm = Vector3.one * voxelMmIfNoAffine };
-            using (var zip = new ZipArchive(File.OpenRead(path), ZipArchiveMode.Read))
+            bool nifti = IsNifti(path);
+            using (var zip = nifti ? null : new ZipArchive(File.OpenRead(path), ZipArchiveMode.Read))
             {
-                // voxel size from the affine's column lengths (i, j, k)
-                var affEntry = zip.GetEntry(affineName + ".npy");
-                if (affEntry != null)
+                int nk, nj, ni;
+                Func<Stream> open;            // a fresh stream positioned at the first float32 value
+                float slope = 1f, inter = 0f;
+                if (nifti)
                 {
-                    using (var s = affEntry.Open())
+                    // NIfTI-1 (.nii): float32, x fastest -- the same memory order as a C-order (k, j, i) array
+                    var h = ReadNiftiHeader(path);
+                    if (h.error != null) { r.error = h.error; return r; }
+                    ni = h.dim[0]; nj = h.dim[1]; nk = h.dim[2];
+                    r.voxelMm = h.pixdim;
+                    if (h.slope != 0f) { slope = h.slope; inter = h.inter; }
+                    long offset = h.voxOffset;
+                    open = () => { var s = File.OpenRead(path); s.Seek(offset, SeekOrigin.Begin); return s; };
+                }
+                else
+                {
+                    // voxel size from the affine's column lengths (i, j, k)
+                    var affEntry = zip.GetEntry(affineName + ".npy");
+                    if (affEntry != null)
                     {
-                        var h = ReadHeader(s);
-                        if (h.descr == "<f8" && h.shape.Length == 2 && h.shape[0] == 4 && h.shape[1] == 4)
+                        using (var s = affEntry.Open())
                         {
-                            var br = new BinaryReader(s);
-                            var m = new double[16];
-                            for (int n = 0; n < 16; n++) m[n] = br.ReadDouble();
-                            double Col(int c) => Math.Sqrt(m[c] * m[c] + m[4 + c] * m[4 + c] + m[8 + c] * m[8 + c]);
-                            r.voxelMm = new Vector3((float)Col(0), (float)Col(1), (float)Col(2));
+                            var h = ReadHeader(s);
+                            if (h.descr == "<f8" && h.shape.Length == 2 && h.shape[0] == 4 && h.shape[1] == 4)
+                            {
+                                var br = new BinaryReader(s);
+                                var m = new double[16];
+                                for (int n = 0; n < 16; n++) m[n] = br.ReadDouble();
+                                double Col(int c) => Math.Sqrt(m[c] * m[c] + m[4 + c] * m[4 + c] + m[8 + c] * m[8 + c]);
+                                r.voxelMm = new Vector3((float)Col(0), (float)Col(1), (float)Col(2));
+                            }
                         }
                     }
-                }
 
-                var entry = zip.GetEntry(arrayName + ".npy");
-                if (entry == null) { r.error = $"{Path.GetFileName(path)} has no {arrayName}.npy"; return r; }
-
-                int nk, nj, ni;
-                using (var s = entry.Open())
-                {
-                    var h = ReadHeader(s);
-                    if (h.descr != "<f4") { r.error = $"{arrayName}: dtype {h.descr}, expected <f4"; return r; }
-                    if (h.fortran) { r.error = $"{arrayName}: Fortran order not supported"; return r; }
-                    if (h.shape.Length != 3) { r.error = $"{arrayName}: {h.shape.Length}-D, expected 3-D (k, j, i)"; return r; }
-                    nk = h.shape[0]; nj = h.shape[1]; ni = h.shape[2];
+                    var entry = zip.GetEntry(arrayName + ".npy");
+                    if (entry == null) { r.error = $"{Path.GetFileName(path)} has no {arrayName}.npy"; return r; }
+                    using (var s = entry.Open())
+                    {
+                        var h = ReadHeader(s);
+                        if (h.descr != "<f4") { r.error = $"{arrayName}: dtype {h.descr}, expected <f4"; return r; }
+                        if (h.fortran) { r.error = $"{arrayName}: Fortran order not supported"; return r; }
+                        if (h.shape.Length != 3) { r.error = $"{arrayName}: {h.shape.Length}-D, expected 3-D (k, j, i)"; return r; }
+                        nk = h.shape[0]; nj = h.shape[1]; ni = h.shape[2];
+                    }
+                    open = () => { var s = entry.Open(); ReadHeader(s); return s; };
                 }
                 r.total = (long)nk * nj * ni;
+                void Rows(int a, int b, int c, Action<int, int, float[]> fn) => StreamRows(open, a, b, c, slope, inter, fn);
 
                 // pass 1: max + log2 histogram of the non-zero values
                 const int Bins = 4096; const float LogMin = -20f, LogMax = 40f;
                 var hist = new long[Bins];
                 float max = 0f; long nonZero = 0;
-                Stream(entry, nk, nj, ni, (k, j, row) =>
+                Rows(nk, nj, ni, (k, j, row) =>
                 {
                     for (int i = 0; i < row.Length; i++)
                     {
@@ -287,7 +311,7 @@ namespace BrainVolume
                 r.voxelMm *= ds;
                 var bytes = new byte[(long)nx * ny * nz];
                 float scale = 254f / high;
-                Stream(entry, nk, nj, ni, (k, j, row) =>
+                Rows(nk, nj, ni, (k, j, row) =>
                 {
                     if (k % ds != 0 || j % ds != 0) return;
                     long o = ((long)(k / ds) * ny + j / ds) * nx;
@@ -341,12 +365,13 @@ namespace BrainVolume
             });
         }
 
-        // Calls rowFn(k, j, row) for every (k, j) row of i values, in file order.
-        static void Stream(ZipArchiveEntry entry, int nk, int nj, int ni, Action<int, int, float[]> rowFn)
+        // Calls rowFn(k, j, row) for every (k, j) row of i values, in file order (value * slope + inter).
+        static void StreamRows(Func<Stream> open, int nk, int nj, int ni, float slope, float inter,
+                               Action<int, int, float[]> rowFn)
         {
-            using (var s = new BufferedStream(entry.Open(), 1 << 20))
+            bool scale = slope != 1f || inter != 0f;
+            using (var s = new BufferedStream(open(), 1 << 20))
             {
-                ReadHeader(s);
                 var buf = new byte[ni * 4];
                 var row = new float[ni];
                 for (int k = 0; k < nk; k++)
@@ -356,13 +381,46 @@ namespace BrainVolume
                         while (got < buf.Length)
                         {
                             int n = s.Read(buf, got, buf.Length - got);
-                            if (n <= 0) throw new EndOfStreamException($"density.npy ended at row k={k} j={j}");
+                            if (n <= 0) throw new EndOfStreamException($"volume data ended at row k={k} j={j}");
                             got += n;
                         }
                         Buffer.BlockCopy(buf, 0, row, 0, buf.Length);
+                        if (scale) for (int i = 0; i < ni; i++) row[i] = row[i] * slope + inter;
                         rowFn(k, j, row);
                     }
             }
+        }
+
+        // ------------------------------------------------------------------ NIfTI-1 (.nii)
+
+        static bool IsNifti(string path) => path.EndsWith(".nii", StringComparison.OrdinalIgnoreCase);
+
+        struct NiftiHeader
+        {
+            public int[] dim; public Vector3 pixdim; public long voxOffset; public float slope, inter; public string error;
+        }
+
+        // The fixed 348-byte NIfTI-1 header (little-endian, single file "n+1"). Only 3-D float32 is supported.
+        static NiftiHeader ReadNiftiHeader(string path)
+        {
+            var h = new NiftiHeader();
+            var b = new byte[352];
+            using (var s = File.OpenRead(path)) ReadExact(s, b, 352);
+            string name = Path.GetFileName(path);
+            if (BitConverter.ToInt32(b, 0) != 348) { h.error = $"{name}: not a little-endian NIfTI-1 file"; return h; }
+            if (b[344] != (byte)'n' || b[345] != (byte)'+' || b[346] != (byte)'1') { h.error = $"{name}: not a single-file NIfTI-1 (.nii, magic n+1)"; return h; }
+            int nd = BitConverter.ToInt16(b, 40);
+            short datatype = BitConverter.ToInt16(b, 70);
+            if (nd < 3 || (nd > 3 && BitConverter.ToInt16(b, 48) > 1)) { h.error = $"{name}: {nd}-D, expected one 3-D volume"; return h; }
+            if (datatype != 16) { h.error = $"{name}: datatype {datatype}, only float32 (16) is supported"; return h; }
+            h.dim = new int[] { BitConverter.ToInt16(b, 42), BitConverter.ToInt16(b, 44), BitConverter.ToInt16(b, 46) };
+            h.pixdim = new Vector3(Mathf.Abs(BitConverter.ToSingle(b, 80)), Mathf.Abs(BitConverter.ToSingle(b, 84)),
+                                   Mathf.Abs(BitConverter.ToSingle(b, 88)));
+            if (h.pixdim.x <= 0f || h.pixdim.y <= 0f || h.pixdim.z <= 0f) h.pixdim = Vector3.one;
+            h.voxOffset = (long)BitConverter.ToSingle(b, 108);
+            h.slope = BitConverter.ToSingle(b, 112);
+            h.inter = BitConverter.ToSingle(b, 116);
+            return h;
         }
 
         struct NpyHeader { public string descr; public bool fortran; public int[] shape; }

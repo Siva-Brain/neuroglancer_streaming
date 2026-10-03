@@ -1,11 +1,11 @@
 # neuroglancer_streaming — Project Handover
 
-**Repo**: `D:\Unity\new\neuroglancer_streaming` (git, remote `https://github.com/Siva-Brain/neuroglancer_streaming.git`). **Current branch `brick_L0`**, pushed to `origin/brick_L0` at `25eb342` (2026-10-02; nothing uncommitted except a regenerated `.slnx`, §9). `brick_L0` contains everything: lordsiva's offline-brick work *and* the `neuro_version` work merged in (§6). `origin/neuro_version` is behind (`dfe60ff`; the local branch has `715500b`).
+**Repo**: `D:\Unity\new\neuroglancer_streaming` (git, remote `https://github.com/Siva-Brain/neuroglancer_streaming.git`). **Current branch `brick_L0`**, pushed to `origin/brick_L0` at `589ac1d` (2026-10-02). The later BFI / V1 changes are **uncommitted** (§9). `brick_L0` contains everything: lordsiva's offline-brick work *and* the `neuro_version` work merged in (§6). `origin/neuro_version` is behind (`dfe60ff`; the local branch has `715500b`).
 **What it is**: a streaming pipeline that takes a whole human brain's histology, stored as very large Zarr volumes, and shows it as a 3D volume in a browser and in Unity on a Sony Spatial Reality Display (SRD, model ELF-SR2). Originally (§0-§5) a Python server on the DGX A100 streams voxel bricks from Zarr. Since 2026-10-01 the Unity side also has **local, server-free** paths for the hb02 brain (one exported level, or offline bricks) and a scripted **neuronal-loss** presentation scene (§6).
-**Unity project**: `brain-streaming/unity/BrainVolumeSRD` — Unity **6000.3.25f1** (upgraded from 6000.3.10f1), **Built-in Render Pipeline** (not URP), Sony `SRDisplayUnityPlugin` **2.6.0**. Scenes: `Assets/Scenes/SampleScene.unity` (brain only) and `Assets/Scenes/NeuronalLossScene.unity` (the timeline).
-**Status in one line**: `NeuronalLossScene` plays a seekable timeline — hb02 brain starts at a fixed start pose, turns to the left sagittal view, is sliced, and SRD_test's neuronal-loss block grows out of the cut face along a straight line — rendered from the **bricked** brain (`Brain` GameObject; **the user's chosen brain for all further development**, `FusedVolume` is off). On Play it also records itself to `Recordings/neuronal_loss_*.mp4` (`TimelineRecorder`). The user has seen the (curved) block path on the Editor's Game view; the straight path, start pose, smaller block, recorder and the bricked brain in this scene are written and committed but **not yet compiled or run** (§9). Nothing has been built to a player or shown on the real SRD.
+**Unity project**: `brain-streaming/unity/BrainVolumeSRD` — Unity **6000.3.25f1** (upgraded from 6000.3.10f1), **Built-in Render Pipeline** (not URP), Sony `SRDisplayUnityPlugin` **2.6.0**. Scenes: `SampleScene` (brain only), `NeuronalLossScene` (the development timeline), `NeuronalLossScene_DualScreen` (copy + a second-monitor camera), and the three **presentation scenes** `Nissl and Labels V1`, `NeuronalLoss Display V2`, `NeuronalLoss Fib Astrocytes V3` (§6a), each built to its own Windows exe.
+**Status in one line**: three 30-second, **looping** presentation timelines (V1: BFI / Nissl / labels three-way split + slice; V2: slice + neuronal-loss block; V3: slice + neuronal loss, Fib and astrocyte maps coming out of the brain) run in the Editor and are built to `BrainVolumeSRD/Builds/<scene>/<scene>.exe` (~46 GB each). Every step was checked in Editor Play mode with screenshots, but **the exes have not yet been seen working on the real SR display**. The first exe showed nothing; two causes were fixed (shaders stripped from the build, a second-display window covering the SRD), and the user's test with the Editor closed is still outstanding (§10).
 
-**How this document was produced**: first version 2026-10-01 by reading the repo only (nothing run). **Updated 2026-10-02** after a day of work in this project (sessions with Claude Code): the hb02 data were measured directly from the exported `.raw` files, the label volume was downloaded from the live DGX server, and every code change was compiled in the open Unity Editor (exceptions noted in §9). Visual results are from the user's screenshots/feedback, not from automated checks. Things worked out by reading code rather than observing are marked *inferred*. §11 lists what is verified and what is not.
+**How this document was produced**: first version 2026-10-01 by reading the repo only (nothing run). **Updated 2026-10-02** after a day of work in this project (sessions with Claude Code): the hb02 data were measured directly from the exported `.raw` files, the label volume was downloaded from the live DGX server, and every code change was compiled in the open Unity Editor (exceptions noted in §9). **Updated again 2026-10-03** for the presentation scenes V1-V3, the exe builds, the `.npz`/`.nii` map loader and the player-build fixes (§6a, §7, §8, §9-§11). Those were compiled and run in Editor Play mode through UnityMCP and checked with screenshots from a fixed viewer position. Visual results are from those screenshots and the user's feedback, not from automated checks. Things worked out by reading code rather than observing are marked *inferred*. §11 lists what is verified and what is not.
 
 The format follows `D:\SGBC\Stroke_video\handover.md` (the StrokeVideo_v2 handover). That project's §2bu describes a sibling SRD project (`SRD_test`) and several of its SRD/Editor gotchas apply here; the relevant ones are repeated in §8.
 
@@ -87,7 +87,9 @@ neuroglancer_streaming/
     │       └── prebrick_srd.py      (brick_L0) one level -> BC3/BC7 bricks + index.json for BrickVolumeLoader
     └── unity/
         ├── BrainStreaming/          Gen-1 C# scripts only (7 files), never made into a project
-        └── BrainVolumeSRD/          the Unity project (§6)
+        ├── npz_files/               (gitignored) astrocyte_density / fib_probability HB02 maps (.npz), §6a
+        ├── bfi/                     (gitignored) BFI_in_MRI_2.nii (200 MB NIfTI), §6a
+        └── BrainVolumeSRD/          the Unity project (§6); Builds/<scene>/ = the exes (gitignored, ~46 GB each)
 ```
 
 ---
@@ -199,7 +201,9 @@ The browser viewer is the reference implementation. The Unity client was written
 - `Assets/csc.rsp` contains `-define:SONY_SRD_SDK` (this, not Player Settings, compiles the real `SonySRDAdapter`).
 - Player Settings: `insecureHttpOption = 2` (plain HTTP always allowed), `activeInputHandler = 2` (Both), `runInBackground = 1`.
 - Packages: Input System 1.20.0, uGUI 2.0.0, Timeline, `com.coplaydev.unity-mcp`.
-- Build Settings scene list is **empty**. No player build exists.
+- Build Settings scene list holds only `Nissl and Labels V1`. The exes are built per scene by `Assets/Editor/SceneBuilds.cs` or `manage_build` with the scene passed explicitly (§7), so the list does not matter.
+- **Graphics ▸ Always Included Shaders** now lists every custom shader that scripts load with `Shader.Find`: `Brain/SRDBrickRaymarch`, `FusedRaymarch`, `NeuronalLossVolume`, `OverlayUnlit`, `DensityVolume`, `Raymarch`, `T1Raymarch`. Without that, a player build strips them and draws nothing (§8.13). Add any new `Shader.Find` shader there too.
+- Graphics API: Direct3D 12 (automatic) in both the Editor and the exe.
 
 ### Three ways the brain gets into Unity
 | Path | Component | Data | Server? |
@@ -230,7 +234,9 @@ All draw procedurally in `OnRenderObject`, so they appear in the SRD eye cameras
 - 2026-10-02: shader switched to the `FusedRaymarch` look (saturation opacity, gamma, shading, jitter). Black-to-white and the seam filter can **not** be applied (data are BC3-compressed): grey blends are transparent anyway, but coloured seam planes would need fixing in `prebrick_srd.py`.
 - Opacity is **step-length corrected** against the whole volume (`_BrickToVol`, `_RefSteps` 256): before, each brick took `steps` samples over its own small box and over-accumulated (smeared, streaky look).
 - Slicing: `slicePosition` / `sliceFromHighZ` in whole-volume units, converted per brick to a `_ClipMin/_ClipMax` box; fully cut bricks are skipped. `Drawn` event as in `FusedVolumeLoader`.
-- Data on this PC: L2 ≈ 8.1 GB (24 bricks), L3 ≈ 2.1 GB, L4 ≈ 0.5 GB, all BC3, gitignored. The scene's `Brain` loads **L2** — all bricks resident at once.
+- Data on this PC: `Bricks/hb02_fused` L1-L4 ≈ 43 GB in total (L1 ≈ 32 GB, L2 ≈ 8.1 GB / 24 bricks, L3 ≈ 2.1 GB, L4 ≈ 0.5 GB), all BC3, gitignored. All bricks of the loaded level stay resident at once.
+- **GPU-memory fallback**: `Brain` asks for `level` 1. If the level is bigger than `vramBudgetMB` (0 = 70 % of the GPU's memory), the finest level that fits loads instead and a warning is logged. On this RTX 3090 (24 GB) L1 needs 32.8 GB against a 17 GB budget, so **L2 loads**, in the Editor and in the exe.
+- **Tissue mask** (`useTissueMask`, on): the BC3 bricks cannot be seam-filtered, so at load a whole-volume R8 mask is built from `Fused/hb02_L5.raw`. It uses the same black-to-white + seam filter as `FusedVolumeLoader`, grown by `maskGrowMm` 0.3. Opacity outside the mask is zero, which removes the stitching-seam planes. About 1.3-1.9 s at start.
 - `BrickStreamer.cs` (lordsiva, "all stages") uses the same shader; it passes the new per-brick values but is not in any scene.
 
 ### `ISliceableVolume`
@@ -277,6 +283,99 @@ On the `NeuronalLossSequence` GameObject. Records the whole timeline to `BrainVo
 ### Local T1 MRI path
 `T1VolumeLoader` + `T1Raymarch` on `T1Volume` (inactive). `t1_mri.raw` is gitignored and was not on this PC's StreamingAssets listing on 2026-10-02.
 
+### Other changes in `NeuronalLossScene` (user's work, committed in `589ac1d`)
+- `AstrocyteDensity` (`NpzDensityVolume`, §6a) sits next to `Brain` as a split view: Brain at (−0.36, 0.49, −0.57), AstrocyteDensity at (0.36, 0.49, −0.57), both scale 1.35. AstrocyteDensity `follow`s the Brain's rotation and cut. `NeuronalLossSequence.startPosition` is (−0.36, 0.49, −0.57), scale 1.35.
+- `ModelMoveController` gained an **R** reset: holding R puts the object back to its transform at Start. In scenes with the seek bar R also restarts the timeline, and both happen at once.
+- `NeuronalLossScene_DualScreen`: copy of `NeuronalLossScene` with the old `Main Camera` renamed `Display2Camera` (untagged, so it is not `Camera.main`; no orbit control, no AudioListener; `targetDisplay` 1) and a `DualScreenView` component. In that scene `activateSecondDisplay` is still on; see §8.14 before building it.
+
+---
+
+## 6a. Presentation scenes V1-V3 (2026-10-02/03)
+
+Three scenes, each a **30 s timeline that loops forever** (`NeuronalLossSequence.loop`), built to one exe each (§7). All share the same rig: the bricked `Brain` (L2 on this PC), the SRD, the seek bar, and `TimelineRecorder` with `recordOnPlay` **off** (F10 still records; `tail` 0, so a recording is exactly 30 s). `Display2Camera` is **inactive** and `DualScreenView.activateSecondDisplay` is **off** in all three (§8.14). Start rotation is always the user's quaternion (0.52188, −0.04395, −0.84894, 0.07078), scale 1.35.
+
+Lineage: V1 was copied from `NeuronalLossScene_DualScreen`, V2 from V1, V3 from V2. V2 and V3 are (re)generated by menu commands in `Assets/Editor/SceneBuilds.cs`: **Brain ▸ Scenes ▸ Create NeuronalLoss Display V2 / Create NeuronalLoss Fib Astrocytes V3**. V1's BFI/ending setup is **Brain ▸ Scenes ▸ V1: add BFI (three-way split)**. They are safe to re-run and the layout constants are at the top of that file. *Caveat*: re-creating V2 copies the current V1, and re-creating V3 copies the current V2.
+
+### V1 — `Nissl and Labels V1` (exe `Builds/Nissl and Labels V1/`)
+Start position (0.082, 0.49, −0.57) (user's transform).
+| Time | Step |
+|---|---|
+| 0-2.5 | Nissl brain (bricked `Brain`) at the start pose |
+| 2.5-6.5 | Rotate to the left sagittal view |
+| 6.5-9.5 | **Split**: `BFI` (left, (−0.47, 0.49, −0.35)), Nissl (middle, (0, 0.49, −0.35)), labels (`FusedVolume`, L4 + `colorRegions`, right, (0.47, 0.49, −0.35)). BFI and labels fade in from the Nissl brain's spot, all shrink to `splitScale` 0.65 |
+| 9.5-15 | Slice to 95 % (`clippingDepth` 0.95, `slice` 5.5 s), all three |
+| 15-15.3 | pause (`sliceBackDelay` 0.3) |
+| 15.3-20.8 | **Slice back** (`sliceBackSeconds` 5.5) |
+| 20.8-25.8 | **Final turn** 360° about world Y (`finalTurnSeconds` 5) |
+| 25.8-27.8 | **Combine**: BFI and labels slide back into the Nissl brain and fade out; Nissl back to its start spot and size |
+| 27.8-30 | **Return**: the brain turns back to the start rotation, so 0:30 = the start pose exactly (checked numerically) |
+- At 95 % only the outermost 5 % of each volume is left, which is a small cap of cortex. That is expected.
+- BFI and labels copy the Nissl brain's rotation, scale and cut every frame. The labels are `FusedVolumeLoader` with the same unit cube. BFI is an `NpzDensityVolume` with `follow` = Brain and the npz `relativeRotation`. All three line up (screenshots at 0:09 and 0:13).
+
+### V2 — `NeuronalLoss Display V2` (exe `Builds/NeuronalLoss Display V2/`)
+Start (0.082, 0.49, −0.57). Brain 3 s → rotate 6 s → slice 6 s to 30 % → the neuronal-loss block (the two `npy_neuronal_loss` stacks, already packed in `StreamingAssets/NeuronalLoss/*_RG.bytes`) grows out of the cut face 6 s → label 0.8 s → hold 3.2 s → **Combine** 2.5 s (25-27.5: label fades, the block flies back into the cut face) → **Return** 2.5 s (27.5-30: the brain turns back to the start pose and the cut closes) → loop. Added 2026-10-03 at the user's request ("like in other versions"); the settings were read back, but this ending was not watched in Play mode, because UnityMCP dropped. It uses the same code as V3, which was checked. `blockLength` 0.2, `comeOut` 0.3, no split. FusedVolume, AstrocyteDensity and BFI are off. Menu **Brain ▸ Scenes ▸ V2: return to start at the end** applies just this ending.
+
+### V3 — `NeuronalLoss Fib Astrocytes V3` (exe `Builds/NeuronalLoss Fib Astrocytes V3/`)
+Layout from the user's sketch (`D:\Unity\new\scrnshot\Screenshot 2026-10-02 172157.png`): brain in the centre, neuronal loss upper-left, Fib upper-right, astrocytes lower-right.
+| Time | Step |
+|---|---|
+| 0-3 | brain, **centred** (start (0, 0.49, −0.57)) |
+| 3-9 | rotate to sagittal |
+| 9-15 | slice to 30 % |
+| 15-21.8 | **together**: the brain moves back (+0.35 z) and shrinks to 70 % (`recede` 2 s, `recedeDuringGrow`) while the neuronal-loss block (`blockLength` 0.27, `comeOut` 0.1), **Fib** (`fib_probability_HB02_0.24mm_0.9999.npz`, orange, at (0.53, 0.70, −0.30)) and **Astrocytes** (`astrocyte_density_HB02_0.24mm.npz`, at (0.53, 0.32, −0.30)), both maps at scale 0.85, all come out of the same cut-face point (tiny → full size, straight line, slight overshoot). Then each gets a white label card |
+| 21.8-25 | hold |
+| 25-27.5 | **Combine**: cards fade, all three fly back into the cut face |
+| 27.5-30 | **Return**: the brain turns back, comes forward, and the cut closes. 0:30 = the start pose exactly |
+- The maps follow the brain's rotation but **not** its cut (whole maps).
+- Map cards have only a title ("Fib", "Astrocytes"). The user has not supplied subtitles or said what "Fib" stands for.
+
+### V4 — `Axon Damage Repair V4` (exe `Builds/Axon Damage Repair V4/`, 2026-10-03)
+Recreates the reference video `npz_files/V4/axon_damage_repair_APP_GAP43_540p15.mp4` (26 s, 960×540, 15 fps): Healthy axons → Axonal damage (APP) → Axonal repair (GAP43) → Damage and repair. Created by **Brain ▸ Scenes ▸ Create Axon Damage Repair V4** (copies V3, switches off its maps, no slice, no block).
+- Data `npz_files/V4/` (copied to `StreamingAssets/Npz/` for builds), all (501, 783, 712) (k, j, i), 0.24 mm, no affine: `healthy` uint8 0/1 (522,599 fibre voxels of the stroke hemisphere); `app` float32 on exactly the same voxels, levels 0.25-0.75 (183k), 1.0 (268k), 1.25-2.0 (72k); `gap43` float32 ~0.95-1 (35,554 voxels, only 368 inside the healthy fibres = new growth). All APP levels are spread evenly over the hemisphere, so the data has no time channel. The "spreading from the stroke" is a radial reveal around the GAP43 centroid (i 236, j 381, k 312).
+- **Colour mapping (my reading of the video legend, not confirmed by the data's author)**: APP < 0.95 stays healthy blue; ≥ 0.95 = APP+ light (orange), shading to APP+ dense (red) from 1.2 to 2.
+- `AxonDamageRepairVolume` (+ shader `Brain/AxonDamageRepair`, in Always Included Shaders) packs the three maps into one RGBA32 3-D texture (R healthy, G APP×presence, B GAP43; `downsample` 2 = block max, 356×392×251, ~140 MB) and ray-marches them together. It follows the Brain's pose (same `relativeRotation` as `NpzDensityVolume`) and draws on its `Drawn` event. Load ~10-15 s in the Editor; the timeline waits for it (`NeuronalLossSequence.waitFor`).
+- `AxonRepairTimeline` runs the stages in the timeline's hold and adds their marks to the transport bar (`holdMarks`). It fades the brain to a shell (`shellOpacity` 0.2), sets the APP / GAP43 radii (65 / 60 mm), and shows a white card above the brain with the video's title, subtitle and colour legend.
+
+| Time | Step |
+|---|---|
+| 0-3 | brain, centred (V3's start) |
+| 3-8 | rotate to sagittal |
+| 8-12 | **Healthy axons**: the brain fades to a shell and the blue fibres fade in |
+| 12-17.5 | **APP damage**: orange/red spreads from the stroke centre |
+| 17.5-22.5 | **GAP43 repair**: green grows from the core |
+| 22.5-25.5 | **Damage + repair** |
+| 25.5-27.5 | Combine: everything fades and the brain is solid again |
+| 27.5-30 | Return to the start pose, then loop |
+
+Checked in Editor Play mode with screenshots at each stage, including the end pose. Not yet seen on the SR display.
+
+### Visible area (why the layouts are where they are)
+The SRD panel is x ±0.895, y 0..1.007 at z = 0 in world space (SRDisplayManager at the origin, `SRDViewSpaceScale` 3). The nominal viewer (WatcherCamera) is at about (0, 0.64, −1.62). Content in front of the panel (negative z) is seen through a narrower window: about **x ±0.58 at z −0.57**, ±0.70 at −0.35, ±0.73 at −0.30, ±0.52 at −0.69. That is why three brains needed to shrink and move back in V1, and why V3's maps sit at z −0.30. For layout checks, screenshot from the fixed viewer position `view_position [0, 0.64, -1.62]`, `view_target [0, 0.5, 0]` (`manage_camera`). The live WatcherCamera follows the head tracker and changes framing between shots.
+
+### Timeline options added to `NeuronalLossSequence` (all off by default; `NeuronalLossScene` behaves as before)
+| Option | What |
+|---|---|
+| `loop` | at the end, seek to 0 and keep playing |
+| `splitVolume`, `splitLeftPosition` (where the **driven** brain goes), `splitRightPosition`, `split` s | "Split" step after Rotate: a second `ISliceableVolume` (labels) fades in and moves apart. It copies the brain's rotation, scale and cut every frame; its `ModelMoveController` is disabled |
+| `splitThird` (an `NpzDensityVolume`), `splitThirdPosition`, `splitScale` | third split brain (BFI) and the brains' size after the split |
+| `sliceBack`, `sliceBackDelay`, `sliceBackSeconds` | undo the cut |
+| `finalTurnSeconds`, `finalTurnDegrees` | turn about world Y at the end |
+| `recede`, `recedeOffset`, `recedeScale`, `recedeDuringGrow` | "Brain back" (V3) |
+| `returnToStart`, `combineSeconds`, `returnSeconds` | Combine + Return ending: block, maps and split brains go back into the brain, which then turns back to `startRotation`, start position/scale and no cut. With this on, the hand controls (`ModelMoveController`) are never enabled |
+| `slicing` (default on) | off = no Slice step / mark, the brain stays whole (V4) |
+Public helpers for other components: `CutAnchorWorld` (the cut-face point the block comes out of), `GrowSeconds`, `GrowStartScale`, `GrowOvershoot`, `CombineAmount`, `HoldStart`, `CombineStart`; `holdMarks` (extra transport marks inside the hold) and `waitFor` (extra "loaded?" checks before the start), both filled in `Awake` (V4's `AxonRepairTimeline`).
+
+### `NpzDensityVolume` — `.npz` and `.nii` maps (`Rendering/NpzDensityVolume.cs` + `Brain/DensityVolume`)
+- Reads a float32 3-D array from a NumPy **`.npz`** (array `arrayName`, voxel size from the 4×4 `affineName` if present, else `voxelMmIfNoAffine` 0.24) or a single-file **NIfTI-1 `.nii`** (float32 only; voxel size from `pixdim`, `scl_slope/inter` applied). It runs on a background thread and maps values to 8 bits (0 = transparent, then linear to the `percentileHigh` percentile of the non-zero values). Optional gap filling between sampled sections (`fillGapMm`, `inPlaneFillMm`). Drawn composite or max-intensity.
+- Axes: index i → Right, j → Anterior, k → Superior for both the HB02 `.npz` maps and the BFI `.nii` (RAS identity sform). Unity local x = i, y = k, z = j. Against the hb02 brain this is `relativeRotation` (0.7071, 0, 0.7071, 0).
+- `follow` (a brain loader): copy its rotation (`followRotation`) and, optionally, its cut (`followSlice`). `visibility` 0..1 scales opacity (used for fading in).
+- File lookup: absolute path, else `StreamingAssets/<path>`, `StreamingAssets/Npz/<file>`, `StreamingAssets/Nifti/<file>`, else `<unity folder>/<path>`. **Builds can only reach StreamingAssets**, so the maps are copied there: `Npz/astrocyte_density_HB02_0.24mm.npz` (22 MB), `Npz/fib_probability_HB02_0.24mm_0.9999.npz` (2 MB), `Nifti/BFI_in_MRI_2.nii` (200 MB). All gitignored; originals in `brain-streaming/unity/npz_files/` and `brain-streaming/unity/bfi/`.
+- The data (measured): astrocyte density 712×783×501 at 0.24 mm, 2.3 % non-zero. Fib probability: the same grid, **no affine** in the file, 0.1 % non-zero, values 0..1. BFI: 411×472×259 at 0.4 mm (164 × 189 × 104 mm), values 0..1, 63 % zero background, tissue mostly 0.5-1. BFI is rendered with `threshold` 0.35, `density` 25, `valueGamma` 1.5 and a warm beige ramp.
+- Load time in the Editor: ~25-45 s for astrocytes (1.1 GB float stream, two passes). V3's maps are needed at 0:15, so on the very first loop after launch they may appear late. The timeline waits for the BFI before starting (`splitThird` must be loaded before `Prepare`).
+
+### `TimelineDensityOverlay` (`Rendering/TimelineDensityOverlay.cs`)
+On a map GameObject (V3's `FibProbability`, `AstrocyteDensity`). Hidden until the timeline mark `appearAtMark` ("Neuronal loss") + `delay`. With `comeOutOfBrain` it then makes the neuronal-loss block's motion from `CutAnchorWorld` to the GameObject's scene position and size (`GrowSeconds`, start size, overshoot). Then a white card (`title`, optional `tagLine`, `cardScale` 0.0006) fades in above it. It follows `CombineAmount` back into the brain. It runs after `NpzDensityVolume` (execution order 110).
+
 ---
 
 ## 7. How to run
@@ -302,6 +401,20 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 1. Open `brain-streaming/unity/BrainVolumeSRD` in **6000.3.25f1**.
 2. `Assets/Scenes/NeuronalLossScene.unity` -> Play: the timeline runs (Space/R/seek bar) and is recorded to `Recordings/neuronal_loss_*.mp4` (untick `recordOnPlay` on `TimelineRecorder` to just watch; F10 records again). `SampleScene.unity` = brain only (C slices).
 3. Without an SRD attached, the plugin's "Run Without Spatial Reality Display" setting must be on (Project Settings ▸ Spatial Reality Display, stored in `SRDProjectSettings.asset`).
+4. Presentation scenes (§6a): open `Assets/Scenes/<V1|V2|V3>.unity` and Play. They loop; Space pauses, the seek bar seeks.
+
+### Building the exes (one per presentation scene)
+- Menu **Brain ▸ Build ▸ Nissl and Labels V1 / NeuronalLoss Display V2 / NeuronalLoss Fib Astrocytes V3** (`Assets/Editor/SceneBuilds.cs`). Output: `BrainVolumeSRD/Builds/<scene>/<scene>.exe` with `<scene>_Data/` next to it. Windows x64.
+- Without the Editor window (batch mode; the project must not be open in another Editor):
+  ```
+  "C:\Program Files\Unity\Hub\Editor\6000.3.25f1\Editor\Unity.exe" -batchmode -quit -projectPath <BrainVolumeSRD> ^
+      -executeMethod BrainVolume.EditorTools.SceneBuilds.BuildNisslAndLabelsV1 -logFile build.log
+  ```
+  (`BuildNeuronalLossDisplayV2`, `BuildNeuronalLossFibAstrocytesV3` for the others).
+- **Size**: ~46 GB each, because the whole `StreamingAssets` is copied (43 GB bricks incl. L1, which only loads on a GPU with ≥ ~47 GB). The first build of a scene copies for ~3 min; rebuilds take seconds. Excluding `Bricks/hb02_fused/L1` would cut a build to ~14 GB without changing what loads on a 24 GB GPU (not done).
+- A build log shows a few "Destroy may not be called from edit mode" errors (`OnDestroy` cleanup running at build time). They are harmless; the build succeeds.
+- **Running an exe**: close the Unity Editor first, otherwise the SRD runtime refuses with "Another Spatial Reality Display application is already running" (§8.15). Copy the whole `Builds/<scene>/` folder; the exe needs `<scene>_Data`. The player log is `%USERPROFILE%\AppData\LocalLow\DefaultCompany\BrainVolumeSRD\Player.log`. Look for `[Bricks] ... loaded 24/24`, `[Fused] Labels loaded`, `[Density] ...`, `[Loss] Timeline drives 'Brain'`.
+- A fresh clone needs the gitignored data copied in before building: `StreamingAssets/Bricks/hb02_fused`, `Fused/hb02_L4*.raw` + `hb02_L5.raw`, `Npz/*.npz`, `Nifti/BFI_in_MRI_2.nii`.
 
 ---
 
@@ -319,15 +432,35 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 10. **Unity compiles only when the Editor has focus**; a stale `Library/ScriptAssemblies/Assembly-CSharp.dll` timestamp means "not compiled yet", not "compiled OK".
 11. **Branches**: `brick_L0` is lordsiva's; today's work was merged into it and pushed. `neuro_version` (local) also has the NeuronalLossScene commit `715500b`, but `origin/neuro_version` does not.
 12. Server-side gotchas from the first version still hold: big default caches (2 GB/block + 16 GB ROI), first CuPy call ~20 s, no auth / open CORS, `LruChunkCache` is falsy when empty, docs lag the code.
+13. **`Shader.Find` shaders are stripped from player builds** unless something references them. The first exe loaded all data but drew nothing; its Player.log showed `[Bricks] Shader 'Brain/SRDBrickRaymarch' not found` etc. Fixed by Always Included Shaders (§6). The Sony plugin's own `Shader.Find` shaders are in its `Resources/` folder and do ship.
+14. **Don't activate a second display in an SRD exe the plain-Unity way.** On this PC Unity's display order is [0] the 1920×1080 monitor, [1] the SR display. The Sony plugin moves Unity's main window onto the SR display itself (`SRDApplicationWindow` activates every display and hides the extra windows). So `Display.displays[1].Activate()` (`DualScreenView.activateSecondDisplay`) opened a full-screen window **on the SR display**, covering the 3-D image. Only the IMGUI HUD showed, and the screen flickered. That is why `activateSecondDisplay` and `Display2Camera` are off in V1-V3. A real second-monitor view should go through the Sony plugin's 2-D view support (`SRD2DView`); not done.
+15. **Only one SRD application at a time, and the Unity Editor counts** once it has used the display (e.g. after Play mode). An exe started while the Editor holds it pops up "Another Spatial Reality Display application is already running" and quits. It may also be why earlier exe runs stayed black (*not confirmed*).
+16. **Editor crashes on D3D12**: three Editor crashes on 2026-10-02 (`Temp/Unity/Editor/Crashes`), all in the NVIDIA driver during a D3D12 draw (`nvwgf2umx` → `D3D12DeviceState::Transition`), during Play mode with several large volumes. If they continue, or if the exe stays black on the SR display, try Player Settings ▸ Graphics APIs = **Direct3D 11** (the Sony plugin supports it). Not tried yet.
+17. **UnityMCP drops** after domain reloads, Play mode starts and long loads (`no_unity_session`). The Editor is usually fine; retry, or reconnect from the MCP for Unity window. After editing scripts, `refresh_unity` + checking that the new field/method exists (via reflection) is the reliable way to know the new code is loaded. `EditorUtility.RequestScriptReload()` forces it.
+18. **Scene copies through UnityMCP**: `EditorSceneManager.SaveScene(scene, path, saveAsCopy: true)` copies the in-memory state including unsaved edits. Never `OpenScene(..., Single)` from code while the open scene is dirty (it discards the edits). Open the copy additively, edit, save, close.
 
 ---
 
-## 9. Working-tree state (2026-10-02, branch `brick_L0`)
+## 9. Working-tree state (2026-10-03, branch `brick_L0`)
 
-**Committed and pushed** as `25eb342` on `origin/brick_L0` (2026-10-02): the brick shader -> FusedRaymarch look + step-length opacity + clip box (`SRDBrickRaymarch.shader`, `BrickVolumeLoader.cs`, `BrickStreamer.cs`), `ISliceableVolume` + timeline on the bricked `Brain`, start pose, straight block path, `blockLength` 0.2, `TimelineRecorder` (+ hand-written `.meta`, guid `b36b0f12e39546db87e586ba305b7558`), the scene edits and this file.
-**Uncommitted**: only `BrainVolumeSRD.slnx` — Unity/VS regenerated, whitespace only; leave out.
+**Pushed** to `origin/brick_L0` (2026-10-02):
+- `25eb342`: bricked-Brain timeline, start pose, straight block path, `TimelineRecorder`.
+- `2d55ea2`: `NeuronalLossScene_DualScreen` + `DualScreenView` (with an R reset that was then removed).
+- `a10a04a` "Reset button": removes that R reset again; `DualScreenView` now only routes the second camera.
+- `589ac1d`: V1-V3 scenes, the timeline options, `TimelineDensityOverlay`, `NpzDensityVolume` (visibility, StreamingAssets lookup, no-affine voxel size), `SceneBuilds.cs`, Always Included Shaders, and the user's pending work (AstrocyteDensity split view, brick tissue mask + VRAM fallback, `ModelMoveController` R reset, earlier handover edits). `.gitignore` now excludes `Builds/`, `Build_V1/`, `npz_files/` and `StreamingAssets/Npz/*.npz`.
 
-**Compile / run status**: the brick shader + `ISliceableVolume` work compiled without errors (Editor.log, 2026-10-02 10:36). The user saw the block's (then curved) path in the Editor and liked it. The **straight path**, the start pose, `blockLength` 0.2 / brain moved back, `TimelineRecorder` and the scene edits (made directly in the `.unity` YAML while the Editor was open) have **not been compiled or played yet**. On the next Play in `NeuronalLossScene` expect: `[Bricks] hb02_fused L2: loaded 24/24 bricks`, `[Loss] Timeline drives 'Brain' (BrickVolumeLoader)`, `[Record] ... SRD watcher view -> ...mp4`, `[Record] Saved N frames ...`. If Unity asks to reload the scene, reload (an Editor-side save would overwrite the YAML edits).
+**Uncommitted** (everything after `589ac1d`, all compiled and run in the Editor):
+- V1: 0.3 s pause before slice back, slice and slice back 5.5 s each, BFI three-way split, Combine/Return ending.
+- `NpzDensityVolume`: NIfTI reader, `StreamingAssets/Nifti` lookup.
+- `NeuronalLossSequence`: `splitThird`, `splitScale`, split brains merging on Combine.
+- `SceneBuilds.cs`: `AddBfiToV1`.
+- `.gitignore`: `bfi/` and `StreamingAssets/Nifti/*.nii`.
+- `StreamingAssets/Nifti.meta`.
+- This file.
+
+**Builds on disk** (gitignored, all succeeded): `Builds/Nissl and Labels V1` (latest V1 with BFI + ending), `Builds/NeuronalLoss Display V2`, `Builds/NeuronalLoss Fib Astrocytes V3` (latest V3), ~46 GB each. `Build_V1/` is an older, user-made build folder.
+
+**Compile / run status**: all scripts compile without errors. Every V1-V3 step was played in the Editor and checked with screenshots. Start/end poses were checked numerically (end pose = start pose for V1 and V3). The 2026-10-02 unknowns about `NeuronalLossScene` (straight path, start pose, recorder) have been superseded: the timeline has run in the Editor many times since. The MP4 recorder (F10) has still not been tried by the user in these scenes.
 
 **Stash**: `stash@{0}` "brick_L0 Unity-generated slnx + packages-lock before merging neuro_version" — regenerated files, normally safe to drop.
 **Backup**: 16 `.meta` files Unity had regenerated on brick_L0 before the merge are in the Claude scratchpad (`brick_L0_untracked_backup`); the tracked versions from neuro_version replaced them. Not needed unless a GUID problem shows up.
@@ -336,15 +469,20 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 
 ## 10. Open issues and suggested next steps
 
-1. **Play `NeuronalLossScene` once** (§9): check it compiles, the bricked Brain loads and starts at the start pose, the smaller block stays in frame, and the MP4 in `Recordings/` looks right (framing, orientation, colours). If the block still leaves the frame: lower `sideDistance`/`comeOut`, or move `startPosition.z` further back (e.g. −0.45).
-2. **Set the neuronal-loss block's final transform**: in Play press End (block in place), move `NeuronalLossBlock` or edit it in the Inspector, press K, put the values in `finalPosition/finalEuler/finalScale` with `useCustomFinal` on.
-3. **Seam planes on the bricked brain**: if visible, add black-to-white + the seam filter (port `FusedVolumeLoader.RemoveSeams`) to `tools/prebrick_srd.py` and re-brick.
-4. **Block placement on the bricked Brain**: `pointOnCut` / `sideDistance` / `comeOut` were tuned on FusedVolume's screenshots. `Brain` now uses the same scale (1.4) and the user's start pose, so they should carry over, but check `pointOnCut` lands on the cortex of the bricked brain.
-5. **Which side is the left hemisphere** is still *inferred* (section 0 faces the viewer at Y = 360). If it is the right one, set `endY` = 180.
-6. **Video**: done in code (`TimelineRecorder`, §6) but no video has been produced yet. If the watcher view is wrong without the display, switch to the fallback camera (or add a fixed camera pose to `TimelineRecorder`).
-7. **Push `neuro_version`** if anyone still works from that branch.
-8. Nothing has been **built to a player** or **seen on the real ELF-SR2**; Build Settings has no scenes.
-9. From the first version, still open: stale 0.5 µm voxel text (§2), `/dashboard` serves the Gen-1 viewer, pick one port/address convention, document the T1 data path, WebSocket transport / multi-GPU / occupancy scan.
+1. **See an exe on the real SR display.** Close the Unity Editor, run `Builds/Nissl and Labels V1/Nissl and Labels V1.exe` and check that the brain appears. If it stays black: read `Player.log` (§7), then switch the graphics API to Direct3D 11 (§8.16) and rebuild all three. Then confirm V2 and V3 the same way.
+2. **Second monitor** (user asked for "two screens" on 2026-10-02): turned off in V1-V3 because it covered the SRD (§8.14). Redo it with the Sony plugin's 2-D view, then re-enable `Display2Camera` or replace it.
+3. **Commit the uncommitted BFI/V1 work** (§9) when the user asks.
+4. Open user choices: subtitles for the V3 map cards and what "Fib" stands for; whether V1/V2 should also start centred (x 0, like V3); exact timings (V1's final turn was cut to 5 s to fit the ending in 30 s).
+5. Load time of the maps (25-45 s) vs. their first use at 0:15 in V3. If it shows on the presentation PC, cache the quantised 8-bit texture to disk (e.g. a `.raw` next to the `.npz`) instead of re-reading the float array every launch.
+6. Smaller builds: exclude `StreamingAssets/Bricks/hb02_fused/L1` (32 GB, never loaded on a 24 GB GPU).
+7. **Play `NeuronalLossScene` once** and check the MP4 in `Recordings/` (framing, orientation, colours). If the block leaves the frame: lower `sideDistance`/`comeOut`, or move `startPosition.z` further back (e.g. −0.45).
+8. **Set the neuronal-loss block's final transform**: in Play press End (block in place), move `NeuronalLossBlock` or edit it in the Inspector, press K, put the values in `finalPosition/finalEuler/finalScale` with `useCustomFinal` on.
+9. **Seam planes on the bricked brain** (now mostly handled by the tissue mask, §6): if visible, add black-to-white + the seam filter (port `FusedVolumeLoader.RemoveSeams`) to `tools/prebrick_srd.py` and re-brick.
+10. **Block placement on the bricked Brain**: `pointOnCut` / `sideDistance` / `comeOut` were tuned on FusedVolume's screenshots. In the Editor screenshots of V2/V3 the block comes out of the bricked brain's cut face as intended, but nobody has checked that `pointOnCut` is on the cortex.
+11. **Which side is the left hemisphere** is still *inferred* (section 0 faces the viewer at Y = 360). If it is the right one, set `endY` = 180.
+12. **Video**: done in code (`TimelineRecorder`, §6) but no video has been produced yet. If the watcher view is wrong without the display, switch to the fallback camera (or add a fixed camera pose to `TimelineRecorder`).
+13. **Push `neuro_version`** if anyone still works from that branch.
+14. From the first version, still open: stale 0.5 µm voxel text (§2), `/dashboard` serves the Gen-1 viewer, pick one port/address convention, document the T1 data path, WebSocket transport / multi-GPU / occupancy scan.
 
 ---
 
@@ -357,9 +495,15 @@ Copy the outputs into `Assets/StreamingAssets/Fused/` or `Assets/StreamingAssets
 | `hb02_L7_labels.raw` correct and aligned | Built from the live server's `/api/label_chunk`; header/size checks; 92 % vs 73 % alignment test |
 | ROI of the .npy files = L6 x 133-181, y 81-129 | Tissue-overlap test (77 % vs 9-14 %); the in-plane transpose could not be decided from data |
 | Timeline, block, seek bar, centre/side placements, Y-only rotation | Compiled without errors in the Editor; behaviour from the user's Play-mode screenshots/feedback |
-| Brick shader look + timeline on `Brain` (2026-10-02) | Compiled without errors; **not yet seen running** (the only Play run had Brain inactive, see §9) |
-| Block coming out of the cut face | User saw the curved version in the Editor ("coming out is nice") and asked for a straight track |
-| Straight path, start pose, `blockLength` 0.2, brain moved back, `TimelineRecorder`, scene YAML edits | Written and pushed; **not compiled or run** |
+| Brick shader look + timeline on `Brain`, straight block path, start pose | Played many times in the Editor during the V1-V3 work (2026-10-02/03), screenshots |
+| Block coming out of the cut face | User saw the curved version in the Editor ("coming out is nice") and asked for a straight track; straight version seen in V2/V3 screenshots |
+| V1-V3 timelines: phase times, split layout, slice/slice back, recede + coming out together, Combine/Return, loop wrap | Editor Play mode via UnityMCP: marks and `TotalSeconds` read back (30 s each), screenshots at chosen times from the fixed viewer (0, 0.64, −1.62), end pose = start pose read back numerically (V1, V3), loop wrap seen (V2: 29.5 s → 3.7 s) |
+| BFI / labels / Nissl line up in V1 | Screenshots at 0:09 and 0:13 (same orientation and size, all cut). Exact anatomical registration between BFI and hb02 **not** checked |
+| `.nii` reader | Header parsed by hand (`od`) and by the loader (411×472×259, 0.4 mm), value statistics scanned (0..1, 63 % zero) |
+| Map files reach the builds | `StreamingAssets/Npz` and `Nifti` present in the `_Data` folders after building |
+| Shaders in builds | First exe's Player.log: shaders "not found". After Always Included Shaders: shader names found in the built data files; data/timeline load per Player.log |
+| Second-display window covering the SRD | Desktop capture of the SR display while the exe ran (grey screen + HUD only); code reading of `SRDApplicationWindow` |
+| `TimelineRecorder` MP4 | **Not run** |
 | SRD_test reference look | From `D:\Unity\SRD_test\Captures\neuronal_block_final.png` / `neuronal_loss_pose.png` (the .mp4 was not viewed) |
 | Server state, Gen-1, browser clients, streamed path | As in the first version: read from code/docs, not re-run (except `/api/health` and `/api/label_chunk` on 2026-10-01) |
-| Real SRD display, player build | **Unknown / not done** |
+| **Exes on the real SR display** | **Not confirmed.** The first runs were blank (two causes fixed); later desktop captures were black with only the HUD, possibly because the Editor held the display. The clean test (Editor closed) is outstanding |

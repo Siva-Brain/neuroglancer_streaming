@@ -60,3 +60,7 @@ brain-streaming/unity/BrainVolumeSRD/Build_V1/
 brain-streaming/unity/npz_files/
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Npz/*.npz
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Npz/*.npz.meta
+# BFI / MRI NIfTI volumes (BFI_in_MRI_2.nii 200 MB) -- copy manually; StreamingAssets/Nifti/ ships in builds
+brain-streaming/unity/bfi/
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Nifti/*.nii
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Nifti/*.nii.meta
