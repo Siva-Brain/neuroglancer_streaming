@@ -119,8 +119,8 @@ namespace BrainVolume
             p.hover = inRange ? menu.ButtonAt(p.point, margin) : -1;
             p.zone = InZone(p.tip, bar, n, s) || InZone(h.PalmPosition, bar, n, s);
 
-            // a hand holding / scaling the brain doesn't use the menu
-            bool busy = manipulator != null && (manipulator.IsGrabbing(left) || manipulator.IsPinchScaling);
+            // a hand holding / scaling the brain or moving the glass slide doesn't use the menu
+            bool busy = manipulator != null && (manipulator.IsGrabbing(left) || manipulator.IsPinchScaling || manipulator.IsSliding(left));
             if (busy && !p.touching) { p.hover = -1; p.onBar = false; }
 
             // touch: the fingertip reaches the bar from the front -> press the button under it (once per touch)

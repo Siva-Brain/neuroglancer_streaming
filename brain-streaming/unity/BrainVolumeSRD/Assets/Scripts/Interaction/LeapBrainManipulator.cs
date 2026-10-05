@@ -13,6 +13,8 @@ namespace BrainVolume
     ///   both hands GRAB, move / twist the pair      moves it, twisting turns it about the vertical (no scaling)
     ///   open the hand                               let go (grab again to go further)
     ///   both hands PINCH, drag apart / together     scale, about the brain's centre (the only way to scale)
+    ///   one hand PINCH the slide's tab, move it     moves the glass slide, which cuts the brain (LeapSliceSlide,
+    ///                                               on with the menu's Slice button)
     ///
     /// The menu bar is touched with a fingertip (LeapMenuInteractor). A hand at the menu (its zone) never starts a
     /// grab or a pinch and stays the menu's (latched) until it has been fully open and away for menuReleaseSeconds;
@@ -21,7 +23,8 @@ namespace BrainVolume
     /// the brain. A fist is not a pinch (pinchMaxGrab). With requireNearBrain a grab only takes the brain
     /// when the hand is at it (within grabReachMetres of its box), else anywhere in front of the display works.
     /// Grabbing while a timeline plays pauses it (the timeline would otherwise pull the brain back); its play
-    /// button continues from where it was. A small disc marks the grab point (teal = holding, yellow = scaling).
+    /// button continues from where it was. A small disc marks the grab point (teal = holding, yellow = scaling,
+    /// magenta = moving the glass slide).
     ///
     /// The SRD world is the real world scaled by SRDViewSpaceScale (the SRDisplayManager's frame: Y = up, origin =
     /// the panel's bottom edge centre, +Z = away from the viewer), so the device is placed at its real position
@@ -87,20 +90,27 @@ namespace BrainVolume
         [Tooltip("A closing hand whose index finger still reads extended gets this long to become a fist, else it must open again.")]
         public float fistWaitSeconds = 0.25f;
 
+        [Header("Glass slide (LeapSliceSlide)")]
+        [Tooltip("Empty = the one on this GameObject (added in Awake if missing). It shows after the menu's Slice button.")]
+        public LeapSliceSlide slide;
+
         [Header("Behaviour")]
         public bool pauseTimelineOnGrab = true;
         public bool showCursors = true;
         [Tooltip("Grab-point disc diameter in metres (scaled with SRDViewSpaceScale).")]
         public float cursorMetres = 0.012f;
 
-        /// <summary>Grab = one hand holds, TwoHand = both hands hold (move / twist), Scale = both hands pinch.</summary>
-        public enum Mode { None, Grab, TwoHand, Scale }
+        /// <summary>Grab = one hand holds, TwoHand = both hands hold (move / twist), Scale = both hands pinch,
+        /// Slide = one hand pinches the glass slide's tab and moves the slide (the cut).</summary>
+        public enum Mode { None, Grab, TwoHand, Scale, Slide }
         public Mode Current { get; private set; }
 
         /// <summary>Is this hand holding the brain right now?</summary>
         public bool IsGrabbing(bool left) => left ? _l.holding : _r.holding;
         /// <summary>Are both hands pinch-scaling the brain right now?</summary>
         public bool IsPinchScaling => Current == Mode.Scale;
+        /// <summary>Is this hand moving the glass slide right now?</summary>
+        public bool IsSliding(bool left) => left ? _l.sliding : _r.sliding;
 
         /// <summary>What this hand is doing right now: Grab (holding, one or both hands), Scale (pinch-scaling) or
         /// None (just tracked or not there). LeapHandRenderer tints by it.</summary>
@@ -109,6 +119,7 @@ namespace BrainVolume
             HandState h = left ? _l : _r;
             if (!h.tracked) return Mode.None;
             if (Current == Mode.Scale) return h.pinching ? Mode.Scale : Mode.None;
+            if (Current == Mode.Slide) return h.sliding ? Mode.Slide : Mode.None;
             return h.holding && Current != Mode.None ? Mode.Grab : Mode.None;
         }
 
@@ -122,6 +133,8 @@ namespace BrainVolume
             public float openSince;      // when the hand last became fully open (-1 = not open)
             public bool seenOpen;        // seen open since it was found (a hand that appears closed doesn't grab)
             public bool pinching;        // thumb + index together, hand otherwise open (with hysteresis)
+            public bool pinchStarted;    // ... and it started this frame
+            public bool sliding;         // this pinch took the glass slide's tab (until the pinch ends)
             public Vector3 point;        // smoothed palm position (world)
             public Vector3 pinchPoint;   // smoothed point between thumb and index tips (world)
             public Quaternion rotation;  // smoothed palm rotation (world)
@@ -140,6 +153,13 @@ namespace BrainVolume
         Material _mat;
         Mesh _disc;
         NeuronalLossSequence[] _timelines;
+
+        void Awake()
+        {
+            // before every Start, so PresentationMenu finds it for its Slice button
+            if (slide == null) slide = GetComponent<LeapSliceSlide>();
+            if (slide == null) slide = gameObject.AddComponent<LeapSliceSlide>();
+        }
 
         void Start()
         {
@@ -166,6 +186,7 @@ namespace BrainVolume
             if (sh != null) _mat = new Material(sh);
             _disc = BuildDisc(32);
             _vol.Drawn += Draw;
+            if (slide != null) slide.Init(_vol, this);
         }
 
         /// <summary>World units per real metre of hand movement: the provider's scale (SRDViewSpaceScale on the SRD,
@@ -195,8 +216,16 @@ namespace BrainVolume
             Read(frame?.GetHand(Chirality.Left), ref _l, _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(true));
             Read(frame?.GetHand(Chirality.Right), ref _r, _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(false));
 
-            bool pinchPair = pinchScale && _l.pinching && _r.pinching;
-            Mode mode = _l.holding && _r.holding ? Mode.TwoHand
+            // glass slide: a pinch that starts at its tab takes it until the pinch ends (one hand at a time)
+            bool slideOn = slide != null && slide.Active;
+            TakeSlide(ref _l, slideOn, _r.sliding);
+            TakeSlide(ref _r, slideOn, _l.sliding);
+            if (slide != null)
+                slide.TabHover = slideOn && !_l.sliding && !_r.sliding && (FreeAtTab(_l) || FreeAtTab(_r));
+
+            bool pinchPair = pinchScale && _l.pinching && _r.pinching && !_l.sliding && !_r.sliding;
+            Mode mode = _l.sliding || _r.sliding ? Mode.Slide
+                      : _l.holding && _r.holding ? Mode.TwoHand
                       : _l.holding || _r.holding ? Mode.Grab
                       : pinchPair ? Mode.Scale
                       : Mode.None;
@@ -259,10 +288,31 @@ namespace BrainVolume
                     _prevDist = dist;
                     break;
                 }
+                case Mode.Slide:
+                {
+                    // the pinching hand moves the slide along its rail (the cut)
+                    HandState h = _l.sliding ? _l : _r;
+                    if (fresh) slide.BeginDrag();
+                    else slide.Drag(h.pinchPoint - _prevPoint);
+                    _prevPoint = h.pinchPoint;
+                    break;
+                }
             }
-            if (fresh && mode != Mode.None && _last == Mode.None && pauseTimelineOnGrab) PauseTimelines();
+            if (_last == Mode.Slide && mode != Mode.Slide) slide.EndDrag();
+            // a playing timeline would pull the brain (and the cut) back
+            if (fresh && mode != Mode.None && (_last == Mode.None || mode == Mode.Slide) && pauseTimelineOnGrab) PauseTimelines();
             _last = Current = mode;
         }
+
+        // A pinch that starts at the slide's tab (from a hand allowed to pinch) takes the slide until the pinch ends.
+        void TakeSlide(ref HandState h, bool slideOn, bool otherSliding)
+        {
+            if (!slideOn || !h.pinching) { h.sliding = false; return; }
+            if (!h.sliding && h.pinchStarted && !otherSliding && slide.NearTab(h.pinchPoint)) h.sliding = true;
+        }
+
+        // an open, tracked hand that could pinch the tab right now (the tab lights up)
+        bool FreeAtTab(HandState h) => h.tracked && !h.closed && !h.latched && slide.NearTab(h.pinchPoint);
 
         // Multiply the brain's scale by f (clamped) keeping its box centre where it is.
         void ScaleAboutCentre(float f)
@@ -331,6 +381,7 @@ namespace BrainVolume
             bool wasPinching = s.pinching;
             s.pinching = !atMenu && !s.closed && h.PinchStrength >= (wasPinching ? pinchOff : pinchOn)
                       && (wasPinching || (!locked && h.GrabStrength < pinchMaxGrab));
+            s.pinchStarted = s.pinching && !wasPinching;
         }
 
         bool NearBrain(Vector3 p)
@@ -362,9 +413,11 @@ namespace BrainVolume
         void DrawCursor(Camera cam, HandState h, float size)
         {
             bool pinch = Current == Mode.Scale && h.pinching;
-            if (!h.tracked || !(h.holding || pinch)) return;
-            Vector3 at = pinch ? h.pinchPoint : h.point;
-            Color c = pinch ?new Color(1f, 0.85f, 0.25f, 0.95f) : new Color(0.18f, 0.83f, 0.75f, 0.95f);
+            bool sliding = Current == Mode.Slide && h.sliding;
+            if (!h.tracked || !(h.holding || pinch || sliding)) return;
+            Vector3 at = pinch || sliding ? h.pinchPoint : h.point;
+            Color c = sliding ? new Color(0.95f, 0.35f, 0.85f, 0.95f)
+                    : pinch ? new Color(1f, 0.85f, 0.25f, 0.95f) : new Color(0.18f, 0.83f, 0.75f, 0.95f);
             Quaternion face = Quaternion.LookRotation(at - cam.transform.position, cam.transform.up);
             _mat.SetColor("_Color", c);
             _mat.SetPass(0);

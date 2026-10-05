@@ -11,7 +11,8 @@ namespace BrainVolume
     /// shaders draw over everything, so a normally rendered hand would vanish behind the brain. Instead the
     /// posed mesh is baked every frame and drawn from the brain's Drawn event with Brain/HandOverlay (depth
     /// pre-pass + soft shading + rim, slightly see-through). The colour follows LeapBrainManipulator's
-    /// gesture: hand colour = tracked, tinted teal = holding the brain (grab), yellow = scaling (two-hand grab).
+    /// gesture: hand colour = tracked, tinted teal = holding the brain (grab), yellow = scaling (two-hand grab),
+    /// magenta = moving the glass slide.
     /// </summary>
     [DefaultExecutionOrder(1000)]   // LateUpdate after HandBinder has posed the bones
     public sealed class LeapHandRenderer : MonoBehaviour
@@ -27,6 +28,8 @@ namespace BrainVolume
         [Tooltip("Tint while the hand holds the brain (one-hand grab: move + turn).")]
         public Color grabColor = new Color(0.18f, 0.83f, 0.75f, 1f);
         public Color scaleColor = new Color(1.00f, 0.85f, 0.25f, 1f);
+        [Tooltip("Tint while the hand moves the glass slide (LeapSliceSlide).")]
+        public Color slideColor = new Color(0.95f, 0.35f, 0.85f, 1f);
         [Tooltip("How strongly a gesture tints the hand (0 = never, 1 = fully the gesture colour).")]
         [Range(0f, 1f)] public float gestureTint = 0.55f;
         [Range(0f, 1f)] public float rim = 0.35f;
@@ -162,6 +165,7 @@ namespace BrainVolume
                 {
                     case LeapBrainManipulator.Mode.Grab: g = grabColor; break;
                     case LeapBrainManipulator.Mode.Scale: g = scaleColor; break;
+                    case LeapBrainManipulator.Mode.Slide: g = slideColor; break;
                     default: return handColor;
                 }
             Color c = Color.Lerp(handColor, g, gestureTint);

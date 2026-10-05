@@ -583,7 +583,7 @@ namespace BrainVolume.EditorTools
         }
 
         // Shader.Find only finds shaders in a build that something references (or that are always included).
-        static void AlwaysInclude(string shaderName)
+        internal static void AlwaysInclude(string shaderName)
         {
             var shader = Shader.Find(shaderName);
             if (shader == null) { Debug.LogError("[SceneBuilds] Shader not found: " + shaderName); return; }
@@ -626,6 +626,19 @@ namespace BrainVolume.EditorTools
             so.ApplyModifiedPropertiesWithoutUndo();
             EditorSceneManager.SaveScene(sc);
             Debug.Log($"[SceneBuilds] V1 loop={seq.loop}, finalTurnSeconds={seq.finalTurnSeconds}, total={seq.showBrain + seq.rotate + seq.split + seq.slice + seq.sliceBackDelay + seq.sliceBackSeconds + seq.finalTurnSeconds + seq.hold} s");
+        }
+    }
+
+    /// <summary>
+    /// Before every player build: shaders that are only found at runtime by name (Shader.Find) and that no scene
+    /// references go into Always Included Shaders, else Shader.Find returns null in the exe.
+    /// </summary>
+    sealed class IncludeRuntimeShaders : UnityEditor.Build.IPreprocessBuildWithReport
+    {
+        public int callbackOrder => 0;
+        public void OnPreprocessBuild(UnityEditor.Build.Reporting.BuildReport report)
+        {
+            SceneBuilds.AlwaysInclude("Brain/GlassSlide");   // LeapSliceSlide (added at runtime)
         }
     }
 }

@@ -15,7 +15,8 @@ namespace BrainVolume
     /// round play/pause button, then one button per version with a caption; a teal highlight slides to the
     /// selected version and a thin line in it shows the version's progress. Selecting a version starts it from
     /// 0:00 at its start pose (again = restart). The seek bar (TimelineTransportUI) sits just above while a
-    /// version is selected.
+    /// version is selected. With Leap hands in the scene a "Slice" toggle follows the versions, behind a divider:
+    /// it shows / hides the glass slide (LeapSliceSlide) that cuts the brain.
     ///
     /// Mouse: click a button (ray from the SRD WatcherCamera, like the seek bar).
     /// Keys:  1 2 3 4 (also the numpad) select V1..V4, 0 = back to the brain only; Space etc. = the seek bar's keys.
@@ -70,6 +71,9 @@ namespace BrainVolume
         public float seekBarWidth = 0.6f;
         [Tooltip("Gap between this bar and the seek bar (canvas units).")]
         public float seekBarGap = 10f;
+        [Tooltip("OFF = selecting a version doesn't show the seek bar; H or T shows / hides it (the choice is kept " +
+                 "when switching versions). Overrides the seek bar's own Visible On Start.")]
+        public bool showSeekBar = false;
         public float viewerDistance = 1.0f;
         public float fallbackPitchDegrees = -18f;
 
@@ -80,13 +84,25 @@ namespace BrainVolume
         [Tooltip("Seconds-ish for the highlight to slide to a new version (smoothing time constant).")]
         public float slideTime = 0.09f;
 
+        [Header("Slice button (glass slide, LeapSliceSlide)")]
+        [Tooltip("A toggle at the right end of the bar that shows / hides the glass slide (only when the scene has one).")]
+        public bool sliceButton = true;
+        public string sliceLabel = "Slice";
+        public string sliceCaption = "glass slide";
+        public float sliceButtonWidth = 130f;
+
         public int Selected { get; private set; } = -1;
         public NeuronalLossSequence Current => Selected >= 0 ? versions[Selected].timeline : null;
-        /// <summary>Buttons: 0 = play/pause, 1..n = the versions.</summary>
-        public int ButtonCount => versions.Length + 1;
+        /// <summary>Buttons: 0 = play/pause, 1..n = the versions, then the Slice toggle (if any).</summary>
+        public int ButtonCount => versions.Length + 1 + (_slice != null ? 1 : 0);
+        /// <summary>The Slice toggle's button index, -1 = none.</summary>
+        public int SliceButton => _slice != null ? versions.Length + 1 : -1;
         public RectTransform ButtonRect(int i) => _buttons != null && i >= 0 && i < _buttons.Length ? _buttons[i] : null;
 
         TimelineTransportUI _transport;
+        LeapSliceSlide _slice;
+        Image _sliceOn;
+        float _sliceAlpha;
         global::SRD.Core.SRDManager _srd;
         bool _srdLooked;
         Camera _cam;
@@ -122,10 +138,13 @@ namespace BrainVolume
             _transport = FindFirstObjectByType<TimelineTransportUI>();
             if (_transport == null) _transport = gameObject.AddComponent<TimelineTransportUI>();
             _transport.panelPosition = seekBarPosition;
+            _transport.visibleOnStart = showSeekBar;
         }
 
         void Start()
         {
+            // the slide is added by LeapBrainManipulator in its Awake (before this Start)
+            if (sliceButton) _slice = FindFirstObjectByType<LeapSliceSlide>();
             Build();
             if (seekBarBelow)
             {
@@ -248,7 +267,12 @@ namespace BrainVolume
         // ------------------------------------------------------------------ placement / visuals
 
         float PlaySize => barHeight - 2f * padding;
-        float BarWidth => 2f * padding + PlaySize + 2f * gap + 1f + versions.Length * (buttonWidth + gap) - gap + gap;
+        // right edge of the last version button, then (behind a divider, like the play button's) the Slice toggle
+        float VersionsEnd => ButtonX(versions.Length + 1) - gap;
+        float SliceX => VersionsEnd + 3f * gap + 1f;
+        float BarWidth => (_slice != null ? SliceX + sliceButtonWidth : VersionsEnd) + padding;
+        // the bar's size is set without the Slice toggle, so it doesn't make the other buttons smaller
+        float SizingWidth => VersionsEnd + padding;
         // left edge of button i in bar coordinates (0 = play)
         float ButtonX(int i) => i == 0 ? padding : padding + PlaySize + 2f * gap + 1f + gap + (i - 1) * (buttonWidth + gap);
 
@@ -261,7 +285,7 @@ namespace BrainVolume
             if (tl != null)
             {
                 float pw = tl.PanelWidth;
-                t.localScale = Vector3.one * (pw * widthOfPanel / BarWidth);
+                t.localScale = Vector3.one * (pw * widthOfPanel / SizingWidth);
                 Quaternion rot = tl.PanelRotation();
                 if (!_srdLooked) { _srd = global::SRD.Utils.SRDSceneEnvironment.GetSRDManager(); _srdLooked = true; }
                 float forward = towardViewer * pw + touchForwardMetres * DisplayFrame.ViewSpaceScale(_srd);
@@ -311,6 +335,15 @@ namespace BrainVolume
                         : i == hover && !sel ? Hover : Clear;
                 _hovers[i].color = Color.Lerp(_hovers[i].color, h, i == _flash && _flashT > 0f ? 1f : k);
             }
+            // Slice toggle: teal while the glass slide is on, its text dark (like a selected version)
+            if (_sliceOn != null)
+            {
+                int si = SliceButton;
+                _sliceAlpha = Mathf.Lerp(_sliceAlpha, _slice.Active ? 1f : 0f, k);
+                _sliceOn.color = new Color(Accent.r, Accent.g, Accent.b, _sliceAlpha);
+                _labels[si].color = Color.Lerp(UiKit.TextPrimary, AccentDark, _sliceAlpha);
+                _captions[si].color = Color.Lerp(UiKit.TextDim, new Color(AccentDark.r, AccentDark.g, AccentDark.b, 0.8f), _sliceAlpha);
+            }
             // the button under a touching fingertip is pushed in
             for (int i = 0; i < _buttons.Length; i++)
                 _buttons[i].localScale = Vector3.Lerp(_buttons[i].localScale, Vector3.one * (i == HandPressed ? 0.92f : 1f), k * 2f);
@@ -344,11 +377,13 @@ namespace BrainVolume
         /// <summary>The bar's canvas (its plane is the menu surface).</summary>
         public Transform Surface => _root != null ? _root.transform : null;
 
-        /// <summary>Press button i (0 = play/pause, 1..n = the versions), with a short flash.</summary>
+        /// <summary>Press button i (0 = play/pause, 1..n = the versions, n + 1 = Slice), with a short flash.</summary>
         public void Press(int i)
         {
             if (i < 0 || i >= ButtonCount) return;
-            if (i == 0) TogglePlay(); else Select(i - 1);
+            if (i == 0) TogglePlay();
+            else if (i == SliceButton) _slice.Toggle();
+            else Select(i - 1);
             _flash = i; _flashT = FlashSeconds;
         }
 
@@ -404,7 +439,7 @@ namespace BrainVolume
             sheen.anchorMin = new Vector2(0f, 0.5f); sheen.anchorMax = Vector2.one;
             sheen.offsetMin = new Vector2(3f, 0f); sheen.offsetMax = new Vector2(-3f, -3f);
 
-            int n = versions.Length + 1;
+            int n = ButtonCount;
             _buttons = new RectTransform[n];
             _hovers = new Image[n];
             _labels = new Text[n];
@@ -447,28 +482,25 @@ namespace BrainVolume
             _progressFill.offsetMin = Vector2.zero; _progressFill.offsetMax = Vector2.zero;
             _hlX = ButtonX(1);
 
-            for (int i = 1; i < n; i++)
+            for (int i = 1; i <= versions.Length; i++)
             {
                 var v = versions[i - 1];
-                var rt = _buttons[i] = UiKit.Rect("V" + i, _bar);
-                Left(rt, ButtonX(i), buttonWidth, bh);
-                _hovers[i] = UiKit.Rounded(UiKit.Panel("Hover", rt, Clear), 18f);
-                UiKit.Stretch(_hovers[i].rectTransform);
-                _hovers[i].transform.SetAsFirstSibling();
-                bool hasCaption = !string.IsNullOrEmpty(v.caption);
-                _labels[i] = UiKit.Label("Label", rt, string.IsNullOrEmpty(v.label) ? "V" + i : v.label, labelSize,
-                                         FontStyle.Bold, UiKit.TextPrimary, TextAnchor.MiddleCenter);
-                var lr = _labels[i].rectTransform;
-                UiKit.Stretch(lr);
-                if (hasCaption) lr.offsetMin = new Vector2(0f, bh * 0.36f);
-                _captions[i] = UiKit.Label("Caption", rt, hasCaption ? v.caption : "", captionSize, FontStyle.Normal,
-                                           UiKit.TextDim, TextAnchor.MiddleCenter);
-                var cr = _captions[i].rectTransform;
-                UiKit.Stretch(cr);
-                cr.offsetMin = new Vector2(0f, 9f); cr.offsetMax = new Vector2(0f, -bh * 0.62f);
+                TextButton(i, "V" + i, ButtonX(i), buttonWidth, bh, string.IsNullOrEmpty(v.label) ? "V" + i : v.label, v.caption);
             }
             // the highlight must be under the buttons' text but over the bar: right after the divider
             _highlight.SetSiblingIndex(div.GetSiblingIndex() + 1);
+
+            // Slice toggle, behind its own divider; its teal "on" fill sits under its hover / text
+            if (_slice != null)
+            {
+                var div2 = UiKit.Panel("Divider", _bar, new Color(1f, 1f, 1f, 0.12f)).rectTransform;
+                Left(div2, VersionsEnd + gap * 1.5f, 1f, bh * 0.6f);
+                int si = SliceButton;
+                TextButton(si, "Slice", SliceX, sliceButtonWidth, bh, sliceLabel, sliceCaption);
+                _sliceOn = UiKit.Rounded(UiKit.Panel("On", _buttons[si], Clear), 18f);
+                UiKit.Stretch(_sliceOn.rectTransform);
+                _sliceOn.transform.SetAsFirstSibling();
+            }
 
             // the hand's pointer (LeapMenuInteractor), on top of everything in the bar
             _cursor = UiKit.Circle("HandCursor", _bar, Color.white);
@@ -476,6 +508,26 @@ namespace BrainVolume
             _cursor.rectTransform.sizeDelta = new Vector2(18f, 18f);
             _cursor.transform.SetAsLastSibling();
             _cursor.gameObject.SetActive(false);
+        }
+
+        // a version-style button i: hover fill, bold label, small caption under it
+        void TextButton(int i, string name, float x, float width, float bh, string label, string caption)
+        {
+            var rt = _buttons[i] = UiKit.Rect(name, _bar);
+            Left(rt, x, width, bh);
+            _hovers[i] = UiKit.Rounded(UiKit.Panel("Hover", rt, Clear), 18f);
+            UiKit.Stretch(_hovers[i].rectTransform);
+            _hovers[i].transform.SetAsFirstSibling();
+            bool hasCaption = !string.IsNullOrEmpty(caption);
+            _labels[i] = UiKit.Label("Label", rt, label, labelSize, FontStyle.Bold, UiKit.TextPrimary, TextAnchor.MiddleCenter);
+            var lr = _labels[i].rectTransform;
+            UiKit.Stretch(lr);
+            if (hasCaption) lr.offsetMin = new Vector2(0f, bh * 0.36f);
+            _captions[i] = UiKit.Label("Caption", rt, hasCaption ? caption : "", captionSize, FontStyle.Normal,
+                                       UiKit.TextDim, TextAnchor.MiddleCenter);
+            var cr = _captions[i].rectTransform;
+            UiKit.Stretch(cr);
+            cr.offsetMin = new Vector2(0f, 9f); cr.offsetMax = new Vector2(0f, -bh * 0.62f);
         }
 
         static void Centre(RectTransform rt, Vector2 pos, Vector2 size)
