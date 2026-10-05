@@ -170,6 +170,7 @@ namespace BrainVolume.SRD
                       $"(grid {(lvl.grid != null ? lvl.grid[0] + "x" + lvl.grid[1] : "?")}), " +
                       $"unitsPerMm={unitsPerMm}.");
             if (useTissueMask) BuildMask();
+            IndexLensLevels(dir, idx);
         }
 
         [System.Serializable] class RawMeta { public int width, height, depth, channels; public string format; public float[] voxelSizeMM, sizeMM; }
@@ -276,18 +277,31 @@ namespace BrainVolume.SRD
                                $"({dx}x{dy}x{dz} {b.tex_format}) — truncated copy? Skipping.");
                 return false;
             }
-            var tex = new Texture3D(dx, dy, dz, fmt, false)
+            brick = Place(b);
+            brick.tex = MakeTexture(b, fmt, File.ReadAllBytes(path));
+            return true;
+        }
+
+        static Texture3D MakeTexture(BrickJson b, TextureFormat fmt, byte[] data)
+        {
+            var tex = new Texture3D(b.stored[0], b.stored[1], b.stored[2], fmt, false)
             {
                 name = b.file, wrapMode = TextureWrapMode.Clamp,
                 filterMode = FilterMode.Bilinear, anisoLevel = 0,
             };
-            tex.SetPixelData(File.ReadAllBytes(path), 0);
+            tex.SetPixelData(data, 0);
             tex.Apply(false, true);
+            return tex;
+        }
 
+        // A brick's placement and sampling (everything but its texture).
+        Brick Place(BrickJson b)
+        {
+            var brick = default(Brick);
+            int dx = b.stored[0], dy = b.stored[1], dz = b.stored[2];
             // CORE placement box (already in centred mm) -> Unity-local, centred on origin.
             Vector3 lo = new Vector3(b.bbox_mm[0], b.bbox_mm[1], b.bbox_mm[2]) * unitsPerMm;
             Vector3 hi = new Vector3(b.bbox_mm[3], b.bbox_mm[4], b.bbox_mm[5]) * unitsPerMm;
-            brick.tex = tex;
             brick.local = Matrix4x4.TRS(lo, Quaternion.identity, hi - lo);
             brick.centerLocal = (lo + hi) * 0.5f;
             // apron/pad-aware sampling: core sub-region of the stored texture
@@ -299,7 +313,7 @@ namespace BrainVolume.SRD
             brick.brickMinVol = new Vector3((b.bbox_mm[0] + 0.5f * _volMm.x) / _volMm.x,
                                             (b.bbox_mm[1] + 0.5f * _volMm.y) / _volMm.y,
                                             (b.bbox_mm[2] + 0.5f * _volMm.z) / _volMm.z);
-            return true;
+            return brick;
         }
 
         void OnRenderObject()
@@ -322,10 +336,14 @@ namespace BrainVolume.SRD
             material.SetFloat("_UseMask", masked ? 1f : 0f);
             if (masked) material.SetTexture("_MaskTex", _mask);
 
-            // back-to-front (premultiplied OVER): sort by distance to camera, far first.
+            // the magnifying lens' camera draws its level's bricks (streamed in), else the base level's
             Matrix4x4 l2w = transform.localToWorldMatrix;
+            List<Brick> draw = _bricks;
+            if (LeapLens.IsLensCamera(cam)) draw = LensBricks(cam, l2w);
+
+            // back-to-front (premultiplied OVER): sort by distance to camera, far first.
             Vector3 camPos = cam.transform.position;
-            _bricks.Sort((a, b2) =>
+            draw.Sort((a, b2) =>
                 (l2w.MultiplyPoint3x4(b2.centerLocal) - camPos).sqrMagnitude
                 .CompareTo((l2w.MultiplyPoint3x4(a.centerLocal) - camPos).sqrMagnitude));
 
@@ -333,7 +351,7 @@ namespace BrainVolume.SRD
             float cut = Mathf.Clamp(slicePosition, 0f, 0.999f);
             float keepLo = sliceFromHighZ ? 0f : cut, keepHi = sliceFromHighZ ? 1f - cut : 1f;
 
-            foreach (var brk in _bricks)
+            foreach (var brk in draw)
             {
                 // ... converted into this brick's own unit cube; skip bricks cut away entirely
                 float zLo = Mathf.Max(0f, (keepLo - brk.brickMinVol.z) / brk.brickToVol.z);
@@ -353,8 +371,157 @@ namespace BrainVolume.SRD
             Drawn?.Invoke(cam);
         }
 
+        // ------------------------------------------------------------------ finer levels for the lens (LeapLens)
+
+        /// <summary>Level the magnifying lens asks for (-1 = none: the lens shows the base level).</summary>
+        public int LensLevel { get; set; } = -1;
+        /// <summary>Level the lens camera actually drew last (a coarser one while the wanted one loads).</summary>
+        public int LensShownLevel { get; private set; } = -1;
+        /// <summary>Levels whose bricks are on disk, finest first (the base included).</summary>
+        public IReadOnlyList<int> Levels => _levelList;
+
+        sealed class LensRef
+        {
+            public BrickJson json; public TextureFormat fmt; public string path; public long bytes;
+            public Brick placed;    // placement only, no texture
+        }
+        sealed class LensResident { public Brick brick; public long bytes; public float used; }
+
+        readonly Dictionary<int, List<LensRef>> _lensLevels = new Dictionary<int, List<LensRef>>();
+        readonly List<int> _levelList = new List<int>();
+        readonly Dictionary<string, LensResident> _lensResident = new Dictionary<string, LensResident>();
+        readonly HashSet<string> _lensInflight = new HashSet<string>();
+        readonly System.Collections.Concurrent.ConcurrentQueue<(LensRef r, byte[] data)> _lensReady =
+            new System.Collections.Concurrent.ConcurrentQueue<(LensRef, byte[])>();
+        readonly List<Brick> _lensDraw = new List<Brick>();
+        readonly List<LensRef> _lensMissing = new List<LensRef>();
+        long _lensBytes;
+
+        [Header("Lens levels (finer bricks streamed in for the magnifying lens)")]
+        [Tooltip("GPU memory (MB) for the lens' finer bricks; least recently seen ones are dropped past it. " +
+                 "0 = auto: 50% of the GPU's memory.")]
+        public int lensBudgetMB = 0;
+        [Tooltip("Bricks uploaded to the GPU per frame (each is up to ~500 MB: an upload is a short hitch).")]
+        public int lensUploadsPerFrame = 1;
+
+        long LensBudget => (lensBudgetMB > 0 ? lensBudgetMB : (long)(SystemInfo.graphicsMemorySize * 0.5f)) << 20;
+
+        // Every level of the index whose bricks are on disk, for the lens (called once the base is loaded).
+        void IndexLensLevels(string dir, IndexJson idx)
+        {
+            _levelList.Clear();
+            foreach (var l in idx.levels)
+            {
+                if (l.bricks == null || l.bricks.Length == 0) continue;
+                var list = new List<LensRef>(l.bricks.Length);
+                foreach (var b in l.bricks)
+                {
+                    if (!FormatOf(b.tex_format, out var fmt)) continue;
+                    list.Add(new LensRef
+                    {
+                        json = b, fmt = fmt, path = Path.Combine(dir, b.file.Replace('/', Path.DirectorySeparatorChar)),
+                        bytes = ExpectedBytes(b.stored[0], b.stored[1], b.stored[2], fmt), placed = Place(b),
+                    });
+                }
+                if (list.Count == 0 || !File.Exists(list[0].path)) continue;   // level listed but not copied here
+                _lensLevels[l.level] = list;
+                _levelList.Add(l.level);
+            }
+            _levelList.Sort();
+            Debug.Log($"[Bricks] Lens levels on disk: {string.Join(", ", _levelList.ConvertAll(x => "L" + x))}.");
+        }
+
+        // The bricks the lens camera draws: those of the wanted level in its view, if they are all loaded, else the
+        // next coarser level whose are (the base always is). The wanted level's missing bricks are requested.
+        List<Brick> LensBricks(Camera cam, Matrix4x4 l2w)
+        {
+            LensShownLevel = level;
+            int want = LensLevel;
+            if (want < 0 || want >= level || _lensLevels.Count == 0) return _bricks;
+            var planes = GeometryUtility.CalculateFrustumPlanes(cam);
+            float now = Time.unscaledTime;
+            bool asked = false;
+            for (int l = want; l < level; l++)
+            {
+                if (!_lensLevels.TryGetValue(l, out var refs)) continue;
+                _lensDraw.Clear();
+                _lensMissing.Clear();
+                long need = 0;
+                foreach (var r in refs)
+                {
+                    if (!GeometryUtility.TestPlanesAABB(planes, WorldBounds(r.placed.local, l2w))) continue;
+                    need += r.bytes;
+                    if (_lensResident.TryGetValue(r.json.file, out var res)) { res.used = now; _lensDraw.Add(res.brick); }
+                    else _lensMissing.Add(r);
+                }
+                if (need > LensBudget) continue;   // too much of this level in view: a coarser one
+                // the finest level that fits is the one loading
+                if (!asked) { foreach (var r in _lensMissing) RequestLens(r); asked = true; }
+                if (_lensMissing.Count == 0 && _lensDraw.Count > 0) { LensShownLevel = l; return _lensDraw; }
+            }
+            return _bricks;
+        }
+
+        void RequestLens(LensRef r)
+        {
+            if (_lensInflight.Contains(r.json.file)) return;
+            _lensInflight.Add(r.json.file);
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                byte[] data = null;
+                try { data = File.ReadAllBytes(r.path); }
+                catch (System.Exception e) { Debug.LogWarning($"[Bricks] lens read {r.json.file}: {e.Message}"); }
+                _lensReady.Enqueue((r, data));
+            });
+        }
+
+        void Update()
+        {
+            // upload what the reader threads finished (throttled), then keep within the budget
+            for (int n = 0; n < lensUploadsPerFrame && _lensReady.TryDequeue(out var it); )
+            {
+                _lensInflight.Remove(it.r.json.file);
+                if (it.data == null || _lensResident.ContainsKey(it.r.json.file)) continue;
+                if (it.data.LongLength != it.r.bytes) { Debug.LogError($"[Bricks] {it.r.json.file}: truncated copy?"); continue; }
+                var b = it.r.placed;
+                b.tex = MakeTexture(it.r.json, it.r.fmt, it.data);
+                _lensResident[it.r.json.file] = new LensResident { brick = b, bytes = it.r.bytes, used = Time.unscaledTime };
+                _lensBytes += it.r.bytes;
+                n++;
+            }
+            if (LensLevel < 0 && _lensResident.Count > 0 && _lensReady.IsEmpty) EvictLens(0);   // lens off: free it all
+            else EvictLens(LensBudget);
+        }
+
+        // Drop the least recently seen lens bricks until they fit in budget (bricks seen this second stay).
+        void EvictLens(long budget)
+        {
+            if (_lensBytes <= budget) return;
+            var cand = new List<KeyValuePair<string, LensResident>>(_lensResident);
+            cand.Sort((a, b) => a.Value.used.CompareTo(b.Value.used));
+            float keep = budget > 0 ? Time.unscaledTime - 1f : float.MaxValue;
+            foreach (var kv in cand)
+            {
+                if (_lensBytes <= budget || kv.Value.used > keep) break;
+                Destroy(kv.Value.brick.tex);
+                _lensBytes -= kv.Value.bytes;
+                _lensResident.Remove(kv.Key);
+            }
+        }
+
+        static Bounds WorldBounds(Matrix4x4 local, Matrix4x4 l2w)
+        {
+            Matrix4x4 m = l2w * local;   // unit cube -> world
+            var b = new Bounds(m.MultiplyPoint3x4(Vector3.zero), Vector3.zero);
+            for (int i = 1; i < 8; i++)
+                b.Encapsulate(m.MultiplyPoint3x4(new Vector3(i & 1, (i >> 1) & 1, (i >> 2) & 1)));
+            return b;
+        }
+
         void OnDestroy()
         {
+            foreach (var r in _lensResident.Values) if (r.brick.tex != null) Destroy(r.brick.tex);
+            _lensResident.Clear();
             foreach (var b in _bricks) if (b.tex != null) Destroy(b.tex);
             _bricks.Clear();
             if (_mask != null) Destroy(_mask);

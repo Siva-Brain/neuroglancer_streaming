@@ -16,6 +16,9 @@ namespace BrainVolume
     ///   Slice on (menu): the glass slide is attached to ONE hand (the one that pressed Slice, else the hand there,
     ///   left or right); moving that hand moves the slide, which cuts the brain (LeapSliceSlide). That hand
     ///   doesn't grab or pinch; the other hand grabs to turn the brain meanwhile (two-hand gestures are off).
+    ///   Lens on (menu): the same, with a magnifying glass (LeapLens) in that hand instead: it shows the brain
+    ///   behind it zoomed in; a pinch with that hand pins the lens in place, the next pinch takes it back.
+    ///   Slice and Lens are one-hand tools: turning one on turns the other off.
     ///
     /// The menu bar is touched with a fingertip (LeapMenuInteractor). A hand at the menu (its zone) never starts a
     /// grab or a pinch and stays the menu's (latched) until it has been fully open and away for menuReleaseSeconds;
@@ -99,6 +102,10 @@ namespace BrainVolume
         [Tooltip("A playing timeline is paused once the slide's hand has moved this far (real metres) since it took the slide.")]
         public float slidePauseMetres = 0.02f;
 
+        [Header("Magnifying lens (LeapLens)")]
+        [Tooltip("Empty = the one on this GameObject (added in Awake if missing). It shows after the menu's Lens button.")]
+        public LeapLens lens;
+
         [Header("Behaviour")]
         public bool pauseTimelineOnGrab = true;
         public bool showCursors = true;
@@ -106,8 +113,8 @@ namespace BrainVolume
         public float cursorMetres = 0.012f;
 
         /// <summary>Grab = one hand holds, TwoHand = both hands hold (move / twist), Scale = both hands pinch,
-        /// Slide = only the glass slide's hand is busy (moving the slide, the cut).</summary>
-        public enum Mode { None, Grab, TwoHand, Scale, Slide }
+        /// Slide = only the glass slide's hand is busy (moving the slide, the cut), Lens = only the lens' hand is busy.</summary>
+        public enum Mode { None, Grab, TwoHand, Scale, Slide, Lens }
         public Mode Current { get; private set; }
 
         /// <summary>Is this hand holding the brain right now?</summary>
@@ -123,7 +130,7 @@ namespace BrainVolume
         {
             HandState h = left ? _l : _r;
             if (!h.tracked) return Mode.None;
-            if (h.sliding) return Mode.Slide;
+            if (h.sliding) return lens != null && lens.Active ? Mode.Lens : Mode.Slide;
             if (Current == Mode.Scale) return h.pinching ? Mode.Scale : Mode.None;
             return h.holding && Current != Mode.None ? Mode.Grab : Mode.None;
         }
@@ -138,10 +145,12 @@ namespace BrainVolume
             public float openSince;      // when the hand last became fully open (-1 = not open)
             public bool seenOpen;        // seen open since it was found (a hand that appears closed doesn't grab)
             public bool pinching;        // thumb + index together, hand otherwise open (with hysteresis)
-            public bool sliding;         // the glass slide is attached to this hand (it never grabs / pinches then)
+            public bool pinchHeld;       // the pinch as read (pinching may be cleared for a tool hand; this keeps the hysteresis)
+            public bool sliding;         // the glass slide / lens is attached to this hand (it never grabs / pinches then)
             public Vector3 point;        // smoothed palm position (world)
             public Vector3 pinchPoint;   // smoothed point between thumb and index tips (world)
             public Quaternion rotation;  // smoothed palm rotation (world)
+            public Vector3 direction;    // smoothed palm-to-fingers direction (world)
         }
 
         LeapMenuInteractor _menu;
@@ -154,9 +163,10 @@ namespace BrainVolume
         Quaternion _prevRot;
         float _prevDist, _prevYaw;
         float _scaleRef = 1f;
-        int _slideHand = -1;             // the glass slide's hand: 0 = left, 1 = right, -1 = none
+        int _slideHand = -1;             // the glass slide's / lens' hand: 0 = left, 1 = right, -1 = none
         float _slideLostAt = -1f;        // when the slide's hand was lost by tracking (-1 = tracked)
-        bool _slideWasOn, _slidePaused;
+        int _toolWas;                    // the one-hand tool last frame: 0 = none, 1 = slide, 2 = lens
+        bool _slidePaused, _lensPinchWas;
         Vector3 _slidePrev, _slideStart;
         Material _mat;
         Mesh _disc;
@@ -167,6 +177,8 @@ namespace BrainVolume
             // before every Start, so PresentationMenu finds it for its Slice button
             if (slide == null) slide = GetComponent<LeapSliceSlide>();
             if (slide == null) slide = gameObject.AddComponent<LeapSliceSlide>();
+            if (lens == null) lens = GetComponent<LeapLens>();
+            if (lens == null) lens = gameObject.AddComponent<LeapLens>();
         }
 
         void Start()
@@ -195,6 +207,7 @@ namespace BrainVolume
             _disc = BuildDisc(32);
             _vol.Drawn += Draw;
             if (slide != null) slide.Init(_vol, this);
+            if (lens != null) lens.Init(_vol, this);
         }
 
         /// <summary>World units per real metre of hand movement: the provider's scale (SRDViewSpaceScale on the SRD,
@@ -224,17 +237,23 @@ namespace BrainVolume
             Read(frame?.GetHand(Chirality.Left), ref _l, _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(true));
             Read(frame?.GetHand(Chirality.Right), ref _r, _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(false));
 
-            // glass slide: attached to one hand while on, which then only moves the slide (the other hand grabs)
-            UpdateSlideHand(slide != null && slide.Active);
+            // glass slide / lens: attached to one hand while on, which then only moves it (the other hand grabs)
+            int tool = slide != null && slide.Active ? 1 : lens != null && lens.Active ? 2 : 0;
+            UpdateSlideHand(tool);
+            // the lens hand's pinch pins the lens where it is / takes it back (on the pinch's start only)
+            bool lensPinch = tool == 2 && (_l.sliding && _l.pinching || _r.sliding && _r.pinching);
+            if (lensPinch && !_lensPinchWas) lens.TogglePinned();
+            _lensPinchWas = lensPinch;
             if (_l.sliding) { _l.holding = false; _l.pinching = false; }
             if (_r.sliding) { _r.holding = false; _r.pinching = false; }
             DriveSlide();
+            DriveLens();
 
             bool pinchPair = pinchScale && _l.pinching && _r.pinching;
             Mode mode = _l.holding && _r.holding ? Mode.TwoHand
                       : _l.holding || _r.holding ? Mode.Grab
                       : pinchPair ? Mode.Scale
-                      : _l.sliding || _r.sliding ? Mode.Slide
+                      : _l.sliding || _r.sliding ? (tool == 2 ? Mode.Lens : Mode.Slide)
                       : Mode.None;
             bool fresh = mode != _last;   // a new gesture (or one hand let go): its first frame is the reference
 
@@ -297,21 +316,22 @@ namespace BrainVolume
                 }
             }
             // a playing timeline would pull the brain back
-            bool gesture = mode != Mode.None && mode != Mode.Slide;
-            if (fresh && gesture && (_last == Mode.None || _last == Mode.Slide) && pauseTimelineOnGrab) PauseTimelines();
+            bool gesture = mode != Mode.None && mode != Mode.Slide && mode != Mode.Lens;
+            if (fresh && gesture && (_last == Mode.None || _last == Mode.Slide || _last == Mode.Lens) && pauseTimelineOnGrab) PauseTimelines();
             _last = Current = mode;
         }
 
-        // The glass slide belongs to one hand while it is on: the hand that just pressed Slice, else the hand that is
-        // there (the one nearer the brain if both are and neither holds it). A hand lost by tracking keeps it for
-        // slideReassignSeconds, then a tracked hand that isn't holding the brain takes it.
-        void UpdateSlideHand(bool slideOn)
+        // The glass slide (or the lens) belongs to one hand while it is on: the hand that just pressed Slice / Lens,
+        // else the hand that is there (the one nearer the brain if both are and neither holds it). A hand lost by
+        // tracking keeps it for slideReassignSeconds, then a tracked hand that isn't holding the brain takes it.
+        // tool: 0 = none, 1 = slide, 2 = lens.
+        void UpdateSlideHand(int tool)
         {
             float now = Time.unscaledTime;
-            if (!slideOn) _slideHand = -1;
+            if (tool == 0) _slideHand = -1;
             else
             {
-                if (!_slideWasOn && _menu != null && now - _menu.LastPressTime < 0.5f)
+                if (tool != _toolWas && _menu != null && now - _menu.LastPressTime < 0.5f)
                     _slideHand = _menu.LastPressLeft ? 0 : 1;
                 bool kept = _slideHand == 0 ? _l.tracked : _slideHand == 1 && _r.tracked;
                 if (kept) _slideLostAt = -1f;
@@ -323,7 +343,7 @@ namespace BrainVolume
                     else if (l || r) _slideHand = l ? 0 : 1;
                 }
             }
-            _slideWasOn = slideOn;
+            _toolWas = tool;
             _l.sliding = _slideHand == 0 && _l.tracked;
             _r.sliding = _slideHand == 1 && _r.tracked;
         }
@@ -360,6 +380,17 @@ namespace BrainVolume
                 }
             }
             _slidePrev = h.point;
+        }
+
+        // The lens follows its hand (absolutely: it sits just past the fingertips). It hides while that hand is at
+        // the menu, so it never covers the buttons, and while the hand is not tracked.
+        void DriveLens()
+        {
+            if (lens == null || !lens.Active) return;
+            bool left = _slideHand == 0;
+            HandState h = left ? _l : _r;
+            bool atMenu = _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(left);
+            lens.Follow(h.sliding && !atMenu, h.point, h.direction);
         }
 
         // distance from a point to the brain's box centre
@@ -406,6 +437,7 @@ namespace BrainVolume
             s.point = s.tracked ? Vector3.Lerp(s.point, p, k) : p;
             s.pinchPoint = s.tracked ? Vector3.Lerp(s.pinchPoint, pp, k) : pp;
             s.rotation = s.tracked ? Quaternion.Slerp(s.rotation, h.Rotation, k) : h.Rotation;
+            s.direction = s.tracked ? Vector3.Slerp(s.direction, h.Direction, k) : h.Direction;
             s.tracked = true;
 
             bool wasClosed = s.closed;
@@ -429,9 +461,10 @@ namespace BrainVolume
 
             // pinch: starts only with the other fingers open (a closing fist also brings thumb and index together),
             // never from a locked hand; a hand that reaches the menu stops pinching
-            bool wasPinching = s.pinching;
+            bool wasPinching = s.pinchHeld;
             s.pinching = !atMenu && !s.closed && h.PinchStrength >= (wasPinching ? pinchOff : pinchOn)
                       && (wasPinching || (!locked && h.GrabStrength < pinchMaxGrab));
+            s.pinchHeld = s.pinching;
         }
 
         bool NearBrain(Vector3 p)
@@ -454,7 +487,7 @@ namespace BrainVolume
 
         void Draw(Camera cam)
         {
-            if (!showCursors || _mat == null || cam == null) return;
+            if (!showCursors || _mat == null || cam == null || LeapLens.IsLensCamera(cam)) return;
             float s = HandScale * cursorMetres;
             DrawCursor(cam, _l, s);
             DrawCursor(cam, _r, s);

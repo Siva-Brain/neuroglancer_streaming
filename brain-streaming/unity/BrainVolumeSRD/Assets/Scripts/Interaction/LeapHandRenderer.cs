@@ -30,6 +30,8 @@ namespace BrainVolume
         public Color scaleColor = new Color(1.00f, 0.85f, 0.25f, 1f);
         [Tooltip("Tint while the hand moves the glass slide (LeapSliceSlide).")]
         public Color slideColor = new Color(0.95f, 0.35f, 0.85f, 1f);
+        [Tooltip("Tint while the hand holds the magnifying lens (LeapLens).")]
+        public Color lensColor = new Color(0.45f, 0.75f, 1.00f, 1f);
         [Tooltip("How strongly a gesture tints the hand (0 = never, 1 = fully the gesture colour).")]
         [Range(0f, 1f)] public float gestureTint = 0.55f;
         [Range(0f, 1f)] public float rim = 0.35f;
@@ -166,6 +168,7 @@ namespace BrainVolume
                     case LeapBrainManipulator.Mode.Grab: g = grabColor; break;
                     case LeapBrainManipulator.Mode.Scale: g = scaleColor; break;
                     case LeapBrainManipulator.Mode.Slide: g = slideColor; break;
+                    case LeapBrainManipulator.Mode.Lens: g = lensColor; break;
                     default: return handColor;
                 }
             Color c = Color.Lerp(handColor, g, gestureTint);
@@ -175,7 +178,7 @@ namespace BrainVolume
 
         void Draw(Camera cam)
         {
-            if (cam == null || _mat == null) return;
+            if (cam == null || _mat == null || LeapLens.IsLensCamera(cam)) return;   // no hands in the zoomed view
             _mat.SetFloat("_Rim", rim);
             foreach (var hv in _hands)
             {

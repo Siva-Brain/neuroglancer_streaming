@@ -99,6 +99,7 @@ namespace BrainVolume
             Active = on;
             if (on)
             {
+                if (_hands != null && _hands.lens != null) _hands.lens.SetActive(false);   // one tool per hand
                 if (_vol.SlicePosition <= 0f) FaceViewer();
                 Debug.Log("[Slice] Slide on.");
             }
@@ -178,7 +179,7 @@ namespace BrainVolume
 
         void Draw(Camera cam)
         {
-            if (!Active || _mat == null || cam == null || !_vol.Loaded) return;
+            if (!Active || _mat == null || cam == null || !_vol.Loaded || LeapLens.IsLensCamera(cam)) return;
             Geometry(out Vector3 c, out Vector3 along, out Vector3 up, out Vector3 n, out Vector3 tabCentre);
             float s = Scale;
             Vector3 half = n * (0.5f * thicknessMetres * s);

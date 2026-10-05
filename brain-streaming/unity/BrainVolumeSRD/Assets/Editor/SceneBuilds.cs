@@ -639,6 +639,7 @@ namespace BrainVolume.EditorTools
         public void OnPreprocessBuild(UnityEditor.Build.Reporting.BuildReport report)
         {
             SceneBuilds.AlwaysInclude("Brain/GlassSlide");   // LeapSliceSlide (added at runtime)
+            SceneBuilds.AlwaysInclude("Brain/Lens");         // LeapLens (added at runtime)
             SceneBuilds.AlwaysInclude("Brain/OverlayCard");  // CardOverlay (the timelines' label cards)
         }
     }
