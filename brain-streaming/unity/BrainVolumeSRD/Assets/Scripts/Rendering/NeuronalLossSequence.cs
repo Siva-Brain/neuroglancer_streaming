@@ -218,6 +218,11 @@ namespace BrainVolume
         public float padding = 18f;
         [Tooltip("Gap between the block's top and the label, SRD_test metres (scaled).")]
         public float labelGap = 0.03f;
+        [Tooltip("ON = the card stays at Card Position / Card Rotation (world, its bottom-centre) instead of riding " +
+                 "above the block.")]
+        public bool useCustomCardPose = false;
+        public Vector3 cardPosition = Vector3.zero;
+        public Quaternion cardRotation = Quaternion.identity;
 
         const float SrdTestBlockLength = 0.56f;   // SRD_test's block long axis (m) the metre values belong to
 
@@ -720,9 +725,14 @@ namespace BrainVolume
             if (label > 0f)
             {
                 _group.alpha = label;
-                Bounds b = BlockBounds();
-                _canvas.transform.SetPositionAndRotation(
-                    new Vector3(b.center.x, b.max.y + labelGap * K, b.center.z), _rootRot);
+                if (useCustomCardPose)
+                    _canvas.transform.SetPositionAndRotation(cardPosition, Quaternion.Normalize(cardRotation));
+                else
+                {
+                    Bounds b = BlockBounds();
+                    _canvas.transform.SetPositionAndRotation(
+                        new Vector3(b.center.x, b.max.y + labelGap * K, b.center.z), _rootRot);
+                }
             }
         }
 
@@ -889,6 +899,7 @@ namespace BrainVolume
             Top(titleText.rectTransform, y, inner, titleFontSize * 1.25f); y += titleFontSize * 1.25f;
             Top(tagText.rectTransform, y, inner, tagFontSize * 1.3f); y += tagFontSize * 1.3f;
             card.sizeDelta = new Vector2(w, y + padding);
+            CardOverlay.Attach(_canvas, card);   // drawn after the brain, so the brain never covers it
             _canvas.SetActive(false);
         }
 

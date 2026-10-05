@@ -191,6 +191,7 @@ namespace BrainVolume
             Top(_tag.rectTransform, y, inner, tagFontSize * 1.3f); y += tagFontSize * 1.3f + 8f;
             Top(_legend.rectTransform, y, inner, legendFontSize * 1.3f); y += legendFontSize * 1.3f;
             card.sizeDelta = new Vector2(w, y + padding);
+            CardOverlay.Attach(_canvas, card);   // drawn after the brain, so the brain never covers it
             _canvas.SetActive(false);
         }
 

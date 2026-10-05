@@ -5842,9 +5842,9 @@ MonoBehaviour:
   blockEuler: {x: 0, y: 90, z: 12}
   spinDegreesPerSecond: 0
   controlsMoveBlock: 1
-  useCustomFinal: 0
-  finalPosition: {x: 0, y: 0, z: 0}
-  finalEuler: {x: 0, y: 0, z: 0}
+  useCustomFinal: 1
+  finalPosition: {x: -0.47200000286102297, y: 0.6209999918937683, z: -0.00475996732711792}
+  finalEuler: {x: 0, y: 135, z: 12}
   finalScale: {x: 1, y: 1, z: 1}
   stepCount: 96
   tissueColor: {r: 0.42, g: 0.42, b: 0.45, a: 1}
@@ -5871,6 +5871,9 @@ MonoBehaviour:
   tagFontSize: 19
   padding: 18
   labelGap: 0.03
+  useCustomCardPose: 1
+  cardPosition: {x: -0.4621059000492096, y: 0.7903107404708862, z: -0.02333051711320877}
+  cardRotation: {x: 0.3819690942764282, y: 0, z: 0, w: 0.9241751432418823}
 --- !u!4 &976250301
 Transform:
   m_ObjectHideFlags: 0

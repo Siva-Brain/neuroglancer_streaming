@@ -181,7 +181,7 @@ namespace BrainVolume
 
         void OnRenderObject()
         {
-            if (_tex == null || _mat == null || Camera.current == null || visibility <= 0.001f) return;
+            if (_tex == null || _mat == null || Camera.current == null || CardOverlay.IsSnapshot(Camera.current) || visibility <= 0.001f) return;
             _mat.SetTexture("_Volume", _tex);
             _mat.SetFloat("_Steps", raySteps);
             _mat.SetFloat("_Threshold", threshold);

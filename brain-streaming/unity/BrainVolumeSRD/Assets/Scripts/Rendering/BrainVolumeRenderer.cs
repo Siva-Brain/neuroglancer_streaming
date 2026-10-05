@@ -35,7 +35,7 @@ namespace BrainVolume
         {
             if (_blocks == null || raymarchMaterial == null || _cube == null) return;
             var cam = Camera.current;
-            if (cam == null) return;
+            if (cam == null || CardOverlay.IsSnapshot(cam)) return;   // not into the label cards
 
             Matrix4x4 root = brainRoot.localToWorldMatrix;
             Vector3 camPos = cam.transform.position;

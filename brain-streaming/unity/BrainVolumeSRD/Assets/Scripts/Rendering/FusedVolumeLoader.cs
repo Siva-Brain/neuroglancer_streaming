@@ -317,7 +317,7 @@ namespace BrainVolume
         void OnRenderObject()
         {
             if (Texture == null || material == null || _cube == null) return;
-            if (Camera.current == null) return;
+            if (Camera.current == null || CardOverlay.IsSnapshot(Camera.current)) return;   // not into the label cards
 
             material.SetTexture("_VolumeTex", Texture);
             material.SetFloat("_Steps", raySteps);

@@ -185,7 +185,7 @@ namespace BrainVolume.SRD
         void OnRenderObject()
         {
             if (material == null || _cube == null || _byLevel.Count == 0) return;
-            var cam = Camera.current; if (cam == null) return;
+            var cam = Camera.current; if (cam == null || CardOverlay.IsSnapshot(cam)) return;   // not into the label cards
             Matrix4x4 l2w = transform.localToWorldMatrix;
             var planes = GeometryUtility.CalculateFrustumPlanes(cam);
 
