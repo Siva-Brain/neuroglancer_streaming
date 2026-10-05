@@ -13,8 +13,9 @@ namespace BrainVolume
     ///   both hands GRAB, move / twist the pair      moves it, twisting turns it about the vertical (no scaling)
     ///   open the hand                               let go (grab again to go further)
     ///   both hands PINCH, drag apart / together     scale, about the brain's centre (the only way to scale)
-    ///   one hand PINCH the slide's tab, move it     moves the glass slide, which cuts the brain (LeapSliceSlide,
-    ///                                               on with the menu's Slice button)
+    ///   Slice on (menu): the glass slide is attached to ONE hand (the one that pressed Slice, else the hand there,
+    ///   left or right); moving that hand moves the slide, which cuts the brain (LeapSliceSlide). That hand
+    ///   doesn't grab or pinch; the other hand grabs to turn the brain meanwhile (two-hand gestures are off).
     ///
     /// The menu bar is touched with a fingertip (LeapMenuInteractor). A hand at the menu (its zone) never starts a
     /// grab or a pinch and stays the menu's (latched) until it has been fully open and away for menuReleaseSeconds;
@@ -93,6 +94,10 @@ namespace BrainVolume
         [Header("Glass slide (LeapSliceSlide)")]
         [Tooltip("Empty = the one on this GameObject (added in Awake if missing). It shows after the menu's Slice button.")]
         public LeapSliceSlide slide;
+        [Tooltip("The slide's hand lost by tracking keeps the slide this long; then the other hand (if free) takes it.")]
+        public float slideReassignSeconds = 1.5f;
+        [Tooltip("A playing timeline is paused once the slide's hand has moved this far (real metres) since it took the slide.")]
+        public float slidePauseMetres = 0.02f;
 
         [Header("Behaviour")]
         public bool pauseTimelineOnGrab = true;
@@ -101,7 +106,7 @@ namespace BrainVolume
         public float cursorMetres = 0.012f;
 
         /// <summary>Grab = one hand holds, TwoHand = both hands hold (move / twist), Scale = both hands pinch,
-        /// Slide = one hand pinches the glass slide's tab and moves the slide (the cut).</summary>
+        /// Slide = only the glass slide's hand is busy (moving the slide, the cut).</summary>
         public enum Mode { None, Grab, TwoHand, Scale, Slide }
         public Mode Current { get; private set; }
 
@@ -118,8 +123,8 @@ namespace BrainVolume
         {
             HandState h = left ? _l : _r;
             if (!h.tracked) return Mode.None;
+            if (h.sliding) return Mode.Slide;
             if (Current == Mode.Scale) return h.pinching ? Mode.Scale : Mode.None;
-            if (Current == Mode.Slide) return h.sliding ? Mode.Slide : Mode.None;
             return h.holding && Current != Mode.None ? Mode.Grab : Mode.None;
         }
 
@@ -133,8 +138,7 @@ namespace BrainVolume
             public float openSince;      // when the hand last became fully open (-1 = not open)
             public bool seenOpen;        // seen open since it was found (a hand that appears closed doesn't grab)
             public bool pinching;        // thumb + index together, hand otherwise open (with hysteresis)
-            public bool pinchStarted;    // ... and it started this frame
-            public bool sliding;         // this pinch took the glass slide's tab (until the pinch ends)
+            public bool sliding;         // the glass slide is attached to this hand (it never grabs / pinches then)
             public Vector3 point;        // smoothed palm position (world)
             public Vector3 pinchPoint;   // smoothed point between thumb and index tips (world)
             public Quaternion rotation;  // smoothed palm rotation (world)
@@ -150,6 +154,10 @@ namespace BrainVolume
         Quaternion _prevRot;
         float _prevDist, _prevYaw;
         float _scaleRef = 1f;
+        int _slideHand = -1;             // the glass slide's hand: 0 = left, 1 = right, -1 = none
+        float _slideLostAt = -1f;        // when the slide's hand was lost by tracking (-1 = tracked)
+        bool _slideWasOn, _slidePaused;
+        Vector3 _slidePrev, _slideStart;
         Material _mat;
         Mesh _disc;
         NeuronalLossSequence[] _timelines;
@@ -216,18 +224,17 @@ namespace BrainVolume
             Read(frame?.GetHand(Chirality.Left), ref _l, _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(true));
             Read(frame?.GetHand(Chirality.Right), ref _r, _menu != null && _menu.isActiveAndEnabled && _menu.InMenuZone(false));
 
-            // glass slide: a pinch that starts at its tab takes it until the pinch ends (one hand at a time)
-            bool slideOn = slide != null && slide.Active;
-            TakeSlide(ref _l, slideOn, _r.sliding);
-            TakeSlide(ref _r, slideOn, _l.sliding);
-            if (slide != null)
-                slide.TabHover = slideOn && !_l.sliding && !_r.sliding && (FreeAtTab(_l) || FreeAtTab(_r));
+            // glass slide: attached to one hand while on, which then only moves the slide (the other hand grabs)
+            UpdateSlideHand(slide != null && slide.Active);
+            if (_l.sliding) { _l.holding = false; _l.pinching = false; }
+            if (_r.sliding) { _r.holding = false; _r.pinching = false; }
+            DriveSlide();
 
-            bool pinchPair = pinchScale && _l.pinching && _r.pinching && !_l.sliding && !_r.sliding;
-            Mode mode = _l.sliding || _r.sliding ? Mode.Slide
-                      : _l.holding && _r.holding ? Mode.TwoHand
+            bool pinchPair = pinchScale && _l.pinching && _r.pinching;
+            Mode mode = _l.holding && _r.holding ? Mode.TwoHand
                       : _l.holding || _r.holding ? Mode.Grab
                       : pinchPair ? Mode.Scale
+                      : _l.sliding || _r.sliding ? Mode.Slide
                       : Mode.None;
             bool fresh = mode != _last;   // a new gesture (or one hand let go): its first frame is the reference
 
@@ -288,31 +295,75 @@ namespace BrainVolume
                     _prevDist = dist;
                     break;
                 }
-                case Mode.Slide:
-                {
-                    // the pinching hand moves the slide along its rail (the cut)
-                    HandState h = _l.sliding ? _l : _r;
-                    if (fresh) slide.BeginDrag();
-                    else slide.Drag(h.pinchPoint - _prevPoint);
-                    _prevPoint = h.pinchPoint;
-                    break;
-                }
             }
-            if (_last == Mode.Slide && mode != Mode.Slide) slide.EndDrag();
-            // a playing timeline would pull the brain (and the cut) back
-            if (fresh && mode != Mode.None && (_last == Mode.None || mode == Mode.Slide) && pauseTimelineOnGrab) PauseTimelines();
+            // a playing timeline would pull the brain back
+            bool gesture = mode != Mode.None && mode != Mode.Slide;
+            if (fresh && gesture && (_last == Mode.None || _last == Mode.Slide) && pauseTimelineOnGrab) PauseTimelines();
             _last = Current = mode;
         }
 
-        // A pinch that starts at the slide's tab (from a hand allowed to pinch) takes the slide until the pinch ends.
-        void TakeSlide(ref HandState h, bool slideOn, bool otherSliding)
+        // The glass slide belongs to one hand while it is on: the hand that just pressed Slice, else the hand that is
+        // there (the one nearer the brain if both are and neither holds it). A hand lost by tracking keeps it for
+        // slideReassignSeconds, then a tracked hand that isn't holding the brain takes it.
+        void UpdateSlideHand(bool slideOn)
         {
-            if (!slideOn || !h.pinching) { h.sliding = false; return; }
-            if (!h.sliding && h.pinchStarted && !otherSliding && slide.NearTab(h.pinchPoint)) h.sliding = true;
+            float now = Time.unscaledTime;
+            if (!slideOn) _slideHand = -1;
+            else
+            {
+                if (!_slideWasOn && _menu != null && now - _menu.LastPressTime < 0.5f)
+                    _slideHand = _menu.LastPressLeft ? 0 : 1;
+                bool kept = _slideHand == 0 ? _l.tracked : _slideHand == 1 && _r.tracked;
+                if (kept) _slideLostAt = -1f;
+                else if (_slideLostAt < 0f) _slideLostAt = now;
+                if (!kept && (_slideHand < 0 || now - _slideLostAt >= slideReassignSeconds))
+                {
+                    bool l = _l.tracked && !_l.holding, r = _r.tracked && !_r.holding;
+                    if (l && r) _slideHand = BrainDistance(_l.point) <= BrainDistance(_r.point) ? 0 : 1;
+                    else if (l || r) _slideHand = l ? 0 : 1;
+                }
+            }
+            _slideWasOn = slideOn;
+            _l.sliding = _slideHand == 0 && _l.tracked;
+            _r.sliding = _slideHand == 1 && _r.tracked;
         }
 
-        // an open, tracked hand that could pinch the tab right now (the tab lights up)
-        bool FreeAtTab(HandState h) => h.tracked && !h.closed && !h.latched && slide.NearTab(h.pinchPoint);
+        // The slide's hand moves the slide along its rail (the cut) by the palm's movement, starting from the cut as
+        // it is (the slide doesn't jump to the hand). It rests while that hand is at the menu or just pressed a
+        // button, and while it is not tracked; it carries on from there when the hand is free again.
+        void DriveSlide()
+        {
+            if (slide == null) return;
+            bool left = _slideHand == 0;
+            HandState h = left ? _l : _r;
+            bool atMenu = _menu != null && _menu.isActiveAndEnabled
+                       && (_menu.InMenuZone(left) || Time.unscaledTime - _menu.LastPressTime < pressLockSeconds);
+            if (!slide.Active || !h.sliding || atMenu)
+            {
+                if (slide.Held) slide.EndDrag();
+                return;
+            }
+            if (!slide.Held)
+            {
+                slide.BeginDrag();
+                _slideStart = h.point;
+                _slidePaused = false;
+            }
+            else
+            {
+                slide.Drag(h.point - _slidePrev);
+                // a playing timeline would pull the cut back: pause it once the hand really moves (not on jitter)
+                if (!_slidePaused && Vector3.Distance(h.point, _slideStart) >= slidePauseMetres * HandScale)
+                {
+                    _slidePaused = true;
+                    if (pauseTimelineOnGrab) PauseTimelines();
+                }
+            }
+            _slidePrev = h.point;
+        }
+
+        // distance from a point to the brain's box centre
+        float BrainDistance(Vector3 p) => Vector3.Distance(p, _vol.UnitCubeToWorld.MultiplyPoint(new Vector3(0.5f, 0.5f, 0.5f)));
 
         // Multiply the brain's scale by f (clamped) keeping its box centre where it is.
         void ScaleAboutCentre(float f)
@@ -381,7 +432,6 @@ namespace BrainVolume
             bool wasPinching = s.pinching;
             s.pinching = !atMenu && !s.closed && h.PinchStrength >= (wasPinching ? pinchOff : pinchOn)
                       && (wasPinching || (!locked && h.GrabStrength < pinchMaxGrab));
-            s.pinchStarted = s.pinching && !wasPinching;
         }
 
         bool NearBrain(Vector3 p)
@@ -413,9 +463,9 @@ namespace BrainVolume
         void DrawCursor(Camera cam, HandState h, float size)
         {
             bool pinch = Current == Mode.Scale && h.pinching;
-            bool sliding = Current == Mode.Slide && h.sliding;
+            bool sliding = h.sliding && slide != null && slide.Held;
             if (!h.tracked || !(h.holding || pinch || sliding)) return;
-            Vector3 at = pinch || sliding ? h.pinchPoint : h.point;
+            Vector3 at = pinch ? h.pinchPoint : h.point;
             Color c = sliding ? new Color(0.95f, 0.35f, 0.85f, 0.95f)
                     : pinch ? new Color(1f, 0.85f, 0.25f, 0.95f) : new Color(0.18f, 0.83f, 0.75f, 0.95f);
             Quaternion face = Quaternion.LookRotation(at - cam.transform.position, cam.transform.up);

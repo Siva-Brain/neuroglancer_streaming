@@ -66,6 +66,8 @@ namespace BrainVolume
         public bool InMenuZone(bool left) => left ? _l.zone : _r.zone;
         /// <summary>When a button was last pressed by hand (Time.unscaledTime); LeapBrainManipulator waits a moment after it.</summary>
         public float LastPressTime { get; private set; } = -999f;
+        /// <summary>Which hand made that press (the Slice button attaches the glass slide to it).</summary>
+        public bool LastPressLeft { get; private set; }
 
         void Start()
         {
@@ -119,8 +121,8 @@ namespace BrainVolume
             p.hover = inRange ? menu.ButtonAt(p.point, margin) : -1;
             p.zone = InZone(p.tip, bar, n, s) || InZone(h.PalmPosition, bar, n, s);
 
-            // a hand holding / scaling the brain or moving the glass slide doesn't use the menu
-            bool busy = manipulator != null && (manipulator.IsGrabbing(left) || manipulator.IsPinchScaling || manipulator.IsSliding(left));
+            // a hand holding / scaling the brain doesn't use the menu (the glass slide's hand does: it can turn Slice off)
+            bool busy = manipulator != null && (manipulator.IsGrabbing(left) || manipulator.IsPinchScaling);
             if (busy && !p.touching) { p.hover = -1; p.onBar = false; }
 
             // touch: the fingertip reaches the bar from the front -> press the button under it (once per touch)
@@ -130,7 +132,7 @@ namespace BrainVolume
             {
                 bool fromFront = wasTracked && prevDepth > touchMetres * s;
                 p.pressed = fromFront && !busy ? p.hover : -1;
-                if (p.pressed >= 0) { menu.Press(p.pressed); LastPressTime = Time.unscaledTime; }
+                if (p.pressed >= 0) { LastPressTime = Time.unscaledTime; LastPressLeft = left; menu.Press(p.pressed); }
             }
             if (!p.touching) p.pressed = -1;
         }

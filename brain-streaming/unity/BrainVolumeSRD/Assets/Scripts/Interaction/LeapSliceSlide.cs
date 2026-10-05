@@ -5,9 +5,10 @@ using UnityEngine;
 namespace BrainVolume
 {
     /// <summary>
-    /// A transparent glass slide that cuts the brain: pinch its tab (thumb + index, one hand) and move the hand, the
-    /// slide follows and everything on the viewer's side of it is cut away. Turned on / off by the menu bar's
-    /// "Slice" button (PresentationMenu); LeapBrainManipulator does the pinching and calls BeginDrag / Drag / EndDrag.
+    /// A transparent glass slide that cuts the brain. Turned on / off by the menu bar's "Slice" button
+    /// (PresentationMenu); while on it is attached to ONE hand (the hand that pressed Slice, else the hand there):
+    /// moving that hand moves the slide and everything on the viewer's side of it is cut away. The other hand still
+    /// grabs to turn the brain. LeapBrainManipulator picks the hand and calls BeginDrag / Drag / EndDrag.
     ///
     /// The slide runs on a rail along the volume's z axis (sections, the brain's left-right axis) and stays parallel
     /// to the cut: it drives ISliceableVolume.SlicePosition, the same cut the timelines make. It is fixed to the brain,
@@ -17,7 +18,7 @@ namespace BrainVolume
     ///
     /// Drawn from the volume's Drawn event (like the hands), so it is never hidden by the brain, as a thin pane of
     /// glass (Brain/GlassSlide): clear face-on, more reflective tilted away, bright bevelled edges, light streaks
-    /// that move with the viewer's head, and a frosted tab. Edges and tab turn magenta while held / at hand.
+    /// that move with the viewer's head, and a frosted tab. Edges and tab turn magenta while the hand moves it.
     /// </summary>
     public sealed class LeapSliceSlide : MonoBehaviour
     {
@@ -32,11 +33,9 @@ namespace BrainVolume
         [Tooltip("Slide movement per hand movement along the rail (1 = follows the hand exactly).")]
         public float gain = 1.5f;
 
-        [Header("Tab and reach (real metres, × the hands' scale)")]
+        [Header("Tab (real metres, × the hands' scale)")]
         public float tabWidthMetres = 0.03f;
         public float tabHeightMetres = 0.018f;
-        [Tooltip("A pinch takes the slide when the pinch point is this close to the tab's centre.")]
-        public float tabReachMetres = 0.045f;
         [Tooltip("Thickness of the glass pane (its edge shows as a bright line when seen side-on).")]
         public float thicknessMetres = 0.003f;
         [Tooltip("Width of the bevelled, brighter border of the glass.")]
@@ -47,7 +46,7 @@ namespace BrainVolume
         public Color glassTint = new Color(0.70f, 0.88f, 0.95f, 0.06f);
         [Tooltip("The glass edge and bevel.")]
         public Color edgeColor = new Color(0.78f, 0.97f, 1.00f, 0.85f);
-        [Tooltip("Edges while held, and the tab while a hand is at it.")]
+        [Tooltip("Edges and tab while the hand moves the slide.")]
         public Color heldColor = new Color(0.95f, 0.35f, 0.85f, 1f);
         [Tooltip("Extra opacity at grazing angles (glass looks clearer face-on, more reflective tilted away).")]
         [Range(0f, 1f)] public float fresnel = 0.35f;
@@ -58,12 +57,10 @@ namespace BrainVolume
         [Tooltip("Seconds for the highlight to fade in / out.")]
         public float highlightFade = 0.12f;
 
-        /// <summary>Is the slide shown (and can it be pinched)?</summary>
+        /// <summary>Is the slide shown?</summary>
         public bool Active { get; private set; }
         /// <summary>Is a hand moving the slide right now?</summary>
         public bool Held { get; private set; }
-        /// <summary>Set by LeapBrainManipulator: a free hand is at the tab (the tab lights up).</summary>
-        public bool TabHover { get; set; }
 
         ISliceableVolume _vol;
         LeapBrainManipulator _hands;
@@ -113,14 +110,6 @@ namespace BrainVolume
                 _lastSet = 0f;
                 Debug.Log("[Slice] Slide off.");
             }
-        }
-
-        /// <summary>Is a world point (a pinch) at the tab?</summary>
-        public bool NearTab(Vector3 p)
-        {
-            if (!Active || _vol == null || !_vol.Loaded) return false;
-            Geometry(out _, out _, out _, out _, out Vector3 tabCentre);
-            return Vector3.Distance(p, tabCentre) <= tabReachMetres * Scale;
         }
 
         public void BeginDrag()
@@ -184,7 +173,7 @@ namespace BrainVolume
             // highlights fade (once per frame, not per eye)
             float k = 1f - Mathf.Exp(-Time.unscaledDeltaTime / Mathf.Max(0.001f, highlightFade));
             _paneHi = Mathf.Lerp(_paneHi, Held ? 1f : 0f, k);
-            _tabHi = Mathf.Lerp(_tabHi, Held || TabHover ? 1f : 0f, k);
+            _tabHi = Mathf.Lerp(_tabHi, Held ? 1f : 0f, k);
         }
 
         void Draw(Camera cam)
