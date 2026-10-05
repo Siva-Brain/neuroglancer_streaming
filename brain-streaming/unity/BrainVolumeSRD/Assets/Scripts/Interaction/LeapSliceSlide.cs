@@ -14,7 +14,8 @@ namespace BrainVolume
     /// to the cut: it drives ISliceableVolume.SlicePosition, the same cut the timelines make. It is fixed to the brain,
     /// so turning the brain (grab) turns the slide with it. When nothing is cut it is parked just outside the brain
     /// on the end facing the viewer. Not held, it always shows the volume's current cut, so a timeline's cut or a
-    /// reset (R) moves it too. Letting go leaves the cut; turning the slide off removes the cut it made.
+    /// reset (R) moves it too. A pinch with the slide's hand stops the slide where it is (edges amber); the next
+    /// pinch lets the hand move it again, from there. Turning the slide off keeps the cut it made.
     ///
     /// Drawn from the volume's Drawn event (like the hands), so it is never hidden by the brain, as a thin pane of
     /// glass (Brain/GlassSlide): clear face-on, more reflective tilted away, bright bevelled edges, light streaks
@@ -48,6 +49,8 @@ namespace BrainVolume
         public Color edgeColor = new Color(0.78f, 0.97f, 1.00f, 0.85f);
         [Tooltip("Edges and tab while the hand moves the slide.")]
         public Color heldColor = new Color(0.95f, 0.35f, 0.85f, 1f);
+        [Tooltip("Edges and tab while the slide is stopped (pinch to stop / move again).")]
+        public Color pausedColor = new Color(1.00f, 0.80f, 0.30f, 1f);
         [Tooltip("Extra opacity at grazing angles (glass looks clearer face-on, more reflective tilted away).")]
         [Range(0f, 1f)] public float fresnel = 0.35f;
         [Tooltip("Strength of the light streaks that slide across the glass as the head moves.")]
@@ -61,6 +64,8 @@ namespace BrainVolume
         public bool Active { get; private set; }
         /// <summary>Is a hand moving the slide right now?</summary>
         public bool Held { get; private set; }
+        /// <summary>Is the slide stopped (a pinch), so the hand doesn't move it until the next pinch?</summary>
+        public bool Paused { get; private set; }
 
         ISliceableVolume _vol;
         LeapBrainManipulator _hands;
@@ -70,7 +75,7 @@ namespace BrainVolume
         Mesh _pane, _tab;
         float _paneHi, _tabHi;   // highlight amounts (faded)
         float _u;         // slide position along the rail: < 0 = parked outside, 0..1 = the cut
-        float _lastSet;    // the cut this slide last wrote (so turning it off only removes its own cut)
+        float _pausedHi;   // stopped highlight amount (faded)
 
         /// <summary>Called by LeapBrainManipulator once it has the brain.</summary>
         public void Init(ISliceableVolume vol, LeapBrainManipulator hands)
@@ -97,6 +102,7 @@ namespace BrainVolume
         {
             if (on == Active || _vol == null) return;
             Active = on;
+            Paused = false;
             if (on)
             {
                 if (_hands != null && _hands.lens != null) _hands.lens.SetActive(false);   // one tool per hand
@@ -105,12 +111,18 @@ namespace BrainVolume
             }
             else
             {
-                Held = false;
-                // remove the slide's own cut (a timeline's cut stays)
-                if (_lastSet > 0f && Mathf.Approximately(_vol.SlicePosition, _lastSet)) _vol.SlicePosition = 0f;
-                _lastSet = 0f;
-                Debug.Log("[Slice] Slide off.");
+                Held = false;   // the cut stays (R resets it)
+                Debug.Log("[Slice] Slide off (cut kept).");
             }
+        }
+
+        /// <summary>Stop the slide where it is / let the hand move it again (the slide hand's pinch).</summary>
+        public void TogglePaused()
+        {
+            if (!Active) return;
+            Paused = !Paused;
+            if (Paused) Held = false;
+            Debug.Log(Paused ? "[Slice] Stopped." : "[Slice] Moving again.");
         }
 
         public void BeginDrag()
@@ -128,8 +140,7 @@ namespace BrainVolume
             Vector3 rail = _vol.UnitCubeToWorld.GetColumn(2);   // unit z -> world (the whole depth)
             float dz = Vector3.Dot(worldDelta, rail) / Mathf.Max(1e-8f, rail.sqrMagnitude) * gain;
             _u = Mathf.Clamp(_u + (_vol.SliceFromHighZ ? -dz : dz), -park, 1f);
-            _lastSet = Mathf.Max(0f, _u);
-            _vol.SlicePosition = _lastSet;
+            _vol.SlicePosition = Mathf.Max(0f, _u);
         }
 
         public void EndDrag() => Held = false;
@@ -175,6 +186,7 @@ namespace BrainVolume
             float k = 1f - Mathf.Exp(-Time.unscaledDeltaTime / Mathf.Max(0.001f, highlightFade));
             _paneHi = Mathf.Lerp(_paneHi, Held ? 1f : 0f, k);
             _tabHi = Mathf.Lerp(_tabHi, Held ? 1f : 0f, k);
+            _pausedHi = Mathf.Lerp(_pausedHi, Paused ? 1f : 0f, k);
         }
 
         void Draw(Camera cam)
@@ -201,8 +213,8 @@ namespace BrainVolume
             {
                 _mat.SetColor("_Tint", tint);
                 _mat.SetColor("_EdgeColor", edgeColor);
-                _mat.SetColor("_Highlight", heldColor);
-                _mat.SetFloat("_HighlightAmount", highlight);
+                _mat.SetColor("_Highlight", Color.Lerp(heldColor, pausedColor, _pausedHi));
+                _mat.SetFloat("_HighlightAmount", Mathf.Max(highlight, _pausedHi));
                 _mat.SetFloat("_Fresnel", fresnel);
                 _mat.SetFloat("_Sheen", sheen);
                 // bevel as a fraction of the pane's width / height (uv), so it is equally wide all round
@@ -211,7 +223,7 @@ namespace BrainVolume
             }
             else
             {
-                Color flat = Color.Lerp(edgeColor, heldColor, highlight);
+                Color flat = Color.Lerp(edgeColor, Color.Lerp(heldColor, pausedColor, _pausedHi), Mathf.Max(highlight, _pausedHi));
                 flat.a = Mathf.Clamp01(tint.a * 2f);
                 _mat.SetColor("_Color", flat);
             }

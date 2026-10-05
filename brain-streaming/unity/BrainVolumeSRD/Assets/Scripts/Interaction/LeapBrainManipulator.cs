@@ -15,7 +15,8 @@ namespace BrainVolume
     ///   both hands PINCH, drag apart / together     scale, about the brain's centre (the only way to scale)
     ///   Slice on (menu): the glass slide is attached to ONE hand (the one that pressed Slice, else the hand there,
     ///   left or right); moving that hand moves the slide, which cuts the brain (LeapSliceSlide). That hand
-    ///   doesn't grab or pinch; the other hand grabs to turn the brain meanwhile (two-hand gestures are off).
+    ///   doesn't grab; its pinch stops the slide, the next pinch lets it move again. The other hand grabs to turn
+    ///   the brain meanwhile (two-hand gestures are off). Slice off keeps the cut.
     ///   Lens on (menu): the same, with a magnifying glass (LeapLens) in that hand instead: it shows the brain
     ///   behind it zoomed in; a pinch with that hand pins the lens in place, the next pinch takes it back.
     ///   Slice and Lens are one-hand tools: turning one on turns the other off.
@@ -166,7 +167,7 @@ namespace BrainVolume
         int _slideHand = -1;             // the glass slide's / lens' hand: 0 = left, 1 = right, -1 = none
         float _slideLostAt = -1f;        // when the slide's hand was lost by tracking (-1 = tracked)
         int _toolWas;                    // the one-hand tool last frame: 0 = none, 1 = slide, 2 = lens
-        bool _slidePaused, _lensPinchWas;
+        bool _slidePaused, _toolPinchWas;
         Vector3 _slidePrev, _slideStart;
         Material _mat;
         Mesh _disc;
@@ -240,10 +241,15 @@ namespace BrainVolume
             // glass slide / lens: attached to one hand while on, which then only moves it (the other hand grabs)
             int tool = slide != null && slide.Active ? 1 : lens != null && lens.Active ? 2 : 0;
             UpdateSlideHand(tool);
-            // the lens hand's pinch pins the lens where it is / takes it back (on the pinch's start only)
-            bool lensPinch = tool == 2 && (_l.sliding && _l.pinching || _r.sliding && _r.pinching);
-            if (lensPinch && !_lensPinchWas) lens.TogglePinned();
-            _lensPinchWas = lensPinch;
+            // the tool hand's pinch (on its start only): the lens is pinned where it is / taken back, the slide
+            // stops / moves again
+            bool toolPinch = tool != 0 && (_l.sliding && _l.pinching || _r.sliding && _r.pinching);
+            if (toolPinch && !_toolPinchWas)
+            {
+                if (tool == 2) lens.TogglePinned();
+                else slide.TogglePaused();
+            }
+            _toolPinchWas = toolPinch;
             if (_l.sliding) { _l.holding = false; _l.pinching = false; }
             if (_r.sliding) { _r.holding = false; _r.pinching = false; }
             DriveSlide();
@@ -350,7 +356,7 @@ namespace BrainVolume
 
         // The slide's hand moves the slide along its rail (the cut) by the palm's movement, starting from the cut as
         // it is (the slide doesn't jump to the hand). It rests while that hand is at the menu or just pressed a
-        // button, and while it is not tracked; it carries on from there when the hand is free again.
+        // button, while it is not tracked and while stopped (pinch); it carries on from there when the hand is free again.
         void DriveSlide()
         {
             if (slide == null) return;
@@ -358,7 +364,7 @@ namespace BrainVolume
             HandState h = left ? _l : _r;
             bool atMenu = _menu != null && _menu.isActiveAndEnabled
                        && (_menu.InMenuZone(left) || Time.unscaledTime - _menu.LastPressTime < pressLockSeconds);
-            if (!slide.Active || !h.sliding || atMenu)
+            if (!slide.Active || !h.sliding || atMenu || slide.Paused)
             {
                 if (slide.Held) slide.EndDrag();
                 return;
