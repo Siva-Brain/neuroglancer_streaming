@@ -365,6 +365,223 @@ namespace BrainVolume.EditorTools
             Debug.Log($"[SceneBuilds] {dst}: total {seq.showBrain + seq.rotate + seq.hold + seq.combineSeconds + seq.returnSeconds:F1} s.");
         }
 
+        [MenuItem("Brain/Build/Presentation All")]
+        public static void BuildPresentationAll() => Build(All);
+
+        const string All = "Presentation All";
+
+        /// <summary>
+        /// "Presentation All" = V1-V4 in one scene with a menu bar (PresentationMenu) at the bottom of the display:
+        /// play/pause + V1..V4 (keys 1-4). Rebuilt from the four scenes every time (safe to re-run; the four scenes
+        /// are only read): a copy of V4 (the shared rig: Brain, SRD, cameras, AxonDamageRepair), plus each scene's
+        /// timeline and its own objects (V1: FusedVolume labels + BFI, V3: Fib + astrocyte maps) moved in under a
+        /// group per version. References to the source scene's Brain are pointed at this scene's Brain.
+        /// </summary>
+        [MenuItem("Brain/Scenes/Create Presentation All (V1-V4 + menu bar)")]
+        public static void CreatePresentationAll()
+        {
+            string dst = $"Assets/Scenes/{All}.unity";
+            if (EditorSceneManager.GetActiveScene().isDirty) EditorSceneManager.SaveOpenScenes();
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(dst) != null) AssetDatabase.DeleteAsset(dst);
+            if (!AssetDatabase.CopyAsset($"Assets/Scenes/{V4}.unity", dst)) { Debug.LogError("[SceneBuilds] Could not copy V4 -> " + dst); return; }
+            var sc = EditorSceneManager.OpenScene(dst, OpenSceneMode.Single);
+
+            // the per-version objects come from their own scenes: drop the (inactive) copies V4 inherited
+            foreach (var go in sc.GetRootGameObjects())
+                if (go.name == "FusedVolume" || go.name == "BFI" || go.name == "AstrocyteDensity" || go.name == "FibProbability")
+                    Object.DestroyImmediate(go);
+
+            string[] scenes = { "Nissl and Labels V1", V2, V3, V4 };
+            string[][] extras =
+            {
+                new[] { "FusedVolume", "BFI" },
+                new string[0],
+                new[] { "FibProbability", "AstrocyteDensity" },
+                new[] { "AxonDamageRepair" },
+            };
+            var timelines = new NeuronalLossSequence[4];
+            for (int v = 0; v < 4; v++)
+            {
+                var group = new GameObject("V" + (v + 1));
+                SceneManager.MoveGameObjectToScene(group, sc);
+                Scene src = sc;
+                if (v < 3) src = EditorSceneManager.OpenScene($"Assets/Scenes/{scenes[v]}.unity", OpenSceneMode.Additive);
+
+                var moved = new System.Collections.Generic.List<GameObject>();
+                foreach (var go in src.GetRootGameObjects())
+                {
+                    bool isTimeline = go.GetComponent<NeuronalLossSequence>() != null;
+                    if (!isTimeline && System.Array.IndexOf(extras[v], go.name) < 0) continue;
+                    if (src != sc) SceneManager.MoveGameObjectToScene(go, sc);
+                    go.transform.SetParent(group.transform, true);
+                    go.SetActive(true);
+                    if (isTimeline)
+                    {
+                        go.name = "Timeline V" + (v + 1);
+                        timelines[v] = go.GetComponent<NeuronalLossSequence>();
+                        // one recorder per scene was fine; four in one scene would all answer F10
+                        var rec = go.GetComponent<TimelineRecorder>();
+                        if (rec != null) Object.DestroyImmediate(rec);
+                    }
+                    moved.Add(go);
+                }
+                if (src != sc)
+                {
+                    // the moved objects still point at the source scene's Brain etc.: point them at ours
+                    foreach (var go in moved)
+                        foreach (var c in go.GetComponentsInChildren<Component>(true))
+                            if (c != null && !(c is Transform)) RemapToScene(c, src, sc);
+                    EditorSceneManager.CloseScene(src, true);   // not saved: the source scene is untouched on disk
+                }
+                if (timelines[v] == null) { Debug.LogError($"[SceneBuilds] {All}: no timeline in {scenes[v]}"); return; }
+                var so = new SerializedObject(timelines[v]);
+                so.FindProperty("transportBar").boolValue = false;   // the menu adds one shared seek bar
+                so.FindProperty("loop").boolValue = true;
+                so.ApplyModifiedPropertiesWithoutUndo();
+            }
+
+            var menuGo = new GameObject("PresentationMenu");
+            SceneManager.MoveGameObjectToScene(menuGo, sc);
+            var menu = menuGo.AddComponent<PresentationMenu>();
+            var m = new SerializedObject(menu);
+            var list = m.FindProperty("versions");
+            list.arraySize = 4;
+            string[] captions = { "Nissl & Labels", "Neuronal Loss", "Fib & Astrocytes", "Axon Repair" };
+            m.FindProperty("startIndex").intValue = -1;   // only the brain until a version is selected
+            for (int v = 0; v < 4; v++)
+            {
+                list.GetArrayElementAtIndex(v).FindPropertyRelative("label").stringValue = "V" + (v + 1);
+                list.GetArrayElementAtIndex(v).FindPropertyRelative("caption").stringValue = captions[v];
+                list.GetArrayElementAtIndex(v).FindPropertyRelative("timeline").objectReferenceValue = timelines[v];
+            }
+            m.ApplyModifiedPropertiesWithoutUndo();
+            menuGo.AddComponent<TimelineTransportUI>();
+
+            // Ultraleap: move / rotate / scale the brain by hand (creates a desktop LeapServiceProvider at runtime)
+            var hands = new GameObject("HandControl");
+            SceneManager.MoveGameObjectToScene(hands, sc);
+            var leap = hands.AddComponent<LeapBrainManipulator>();
+            var view = hands.AddComponent<LeapHandRenderer>();   // the hands themselves, drawn on top of the brain
+            AlwaysInclude("Brain/HandOverlay");
+            var hv = new SerializedObject(view);
+            hv.FindProperty("handsPrefab").objectReferenceValue = AssetDatabase.LoadAssetAtPath<GameObject>(
+                "Packages/com.ultraleap.tracking/Hands/Runtime/Prefabs/Built In Render Pipeline (Dynamically Upgradable)/GhostHands.prefab");
+            hv.FindProperty("manipulator").objectReferenceValue = leap;
+            hv.ApplyModifiedPropertiesWithoutUndo();
+            var point = hands.AddComponent<LeapMenuInteractor>();   // point + pinch = click the menu bar
+            var pm = new SerializedObject(point);
+            pm.FindProperty("menu").objectReferenceValue = menu;
+            pm.FindProperty("manipulator").objectReferenceValue = leap;
+            pm.ApplyModifiedPropertiesWithoutUndo();
+            if (view.handsPrefab == null) Debug.LogError("[SceneBuilds] GhostHands prefab not found in the Ultraleap package.");
+            foreach (var go in sc.GetRootGameObjects())
+                if (go.name == "Brain")
+                {
+                    var l = new SerializedObject(leap);
+                    l.FindProperty("volume").objectReferenceValue = go.GetComponent<BrainVolume.SRD.BrickVolumeLoader>();
+                    l.ApplyModifiedPropertiesWithoutUndo();
+                }
+
+            EditorSceneManager.MarkSceneDirty(sc);
+            EditorSceneManager.SaveScene(sc);
+            Debug.Log($"[SceneBuilds] {dst}: V1-V4 timelines + menu bar (keys 1-4).");
+        }
+
+        const string Flat = "Presentation All Flat";
+
+        [MenuItem("Brain/Build/Presentation All Flat (85-inch screen)")]
+        public static void BuildPresentationAllFlat() => Build(Flat);
+
+        /// <summary>
+        /// "Presentation All Flat" = Presentation All on an ordinary flat screen (the 85-inch display). A copy of
+        /// Presentation All (re-run after changing it; the source is only read) with the SRDisplayManager saved
+        /// inactive (the Sony plugin never starts; its transform stays the display frame), a FlatCamera (MainCamera,
+        /// Display 1) with FlatDisplayRig (virtual ELF-SR2 panel + camera framing it, and the Ultraleap mapping:
+        /// HandControl stays on, its provider placed by FlatDisplayRig.PlaceHandDevice) and DualScreenView off.
+        /// </summary>
+        [MenuItem("Brain/Scenes/Create Presentation All Flat (85-inch screen)")]
+        public static void CreatePresentationAllFlat()
+        {
+            string dst = $"Assets/Scenes/{Flat}.unity";
+            if (EditorSceneManager.GetActiveScene().isDirty) EditorSceneManager.SaveOpenScenes();
+            if (AssetDatabase.LoadAssetAtPath<SceneAsset>(dst) != null) AssetDatabase.DeleteAsset(dst);
+            if (!AssetDatabase.CopyAsset($"Assets/Scenes/{All}.unity", dst)) { Debug.LogError("[SceneBuilds] Could not copy " + All + " -> " + dst); return; }
+            var sc = EditorSceneManager.OpenScene(dst, OpenSceneMode.Single);
+
+            Camera cam = null;
+            foreach (var go in sc.GetRootGameObjects())
+            {
+                if (go.GetComponent<global::SRD.Core.SRDManager>() != null) go.SetActive(false);
+                foreach (var dv in go.GetComponentsInChildren<DualScreenView>(true)) dv.enabled = false;
+                if (go.name == "Display2Camera" || go.name == "FlatCamera") cam = go.GetComponent<Camera>();
+            }
+            if (cam == null)
+            {
+                var g = new GameObject("FlatCamera");
+                SceneManager.MoveGameObjectToScene(g, sc);
+                cam = g.AddComponent<Camera>();
+            }
+            var cg = cam.gameObject;
+            cg.name = "FlatCamera";
+            cg.tag = "MainCamera";
+            cg.SetActive(true);
+            cam.targetDisplay = 0;
+            cam.clearFlags = CameraClearFlags.SolidColor;
+            cam.backgroundColor = new Color(0f, 0f, 0f, 0f);
+            cam.nearClipPlane = 0.01f;
+            if (cg.GetComponent<AudioListener>() == null) cg.AddComponent<AudioListener>();
+            var rig = cg.GetComponent<FlatDisplayRig>();
+            if (rig == null) rig = cg.AddComponent<FlatDisplayRig>();
+            rig.viewCamera = cam;
+            EditorUtility.SetDirty(cam);
+            EditorUtility.SetDirty(rig);
+
+            EditorSceneManager.MarkSceneDirty(sc);
+            EditorSceneManager.SaveScene(sc);
+            Debug.Log($"[SceneBuilds] {dst}: SRD off, FlatCamera + FlatDisplayRig (virtual SR2 panel, hands mapped onto it).");
+        }
+
+        // Object references into `src` (e.g. the source scene's Brain) -> the object at the same hierarchy path
+        // (same component type and index) in `dst`. Anything without a counterpart is cleared, with a warning.
+        static void RemapToScene(Object target, Scene src, Scene dst)
+        {
+            var so = new SerializedObject(target);
+            var p = so.GetIterator();
+            bool changed = false;
+            while (p.Next(true))
+            {
+                if (p.propertyType != SerializedPropertyType.ObjectReference || p.objectReferenceValue == null) continue;
+                var o = p.objectReferenceValue;
+                GameObject g = o is GameObject go ? go : o is Component c ? c.gameObject : null;
+                if (g == null || g.scene != src) continue;
+                Object to = Counterpart(o, g, dst);
+                if (to == null) Debug.LogWarning($"[SceneBuilds] {target.name}.{target.GetType().Name}.{p.propertyPath}: no '{g.name}' in {dst.name}, cleared.");
+                p.objectReferenceValue = to;
+                changed = true;
+            }
+            if (changed) so.ApplyModifiedPropertiesWithoutUndo();
+        }
+
+        static Object Counterpart(Object o, GameObject g, Scene dst)
+        {
+            string path = g.name;
+            for (var t = g.transform.parent; t != null; t = t.parent) path = t.name + "/" + path;
+            string[] names = path.Split('/');
+            GameObject found = null;
+            foreach (var r in dst.GetRootGameObjects()) if (r.name == names[0]) { found = r; break; }
+            for (int i = 1; i < names.Length && found != null; i++)
+            {
+                var child = found.transform.Find(names[i]);
+                found = child != null ? child.gameObject : null;
+            }
+            if (found == null || o is GameObject) return found;
+            var type = o.GetType();
+            var all = g.GetComponents(type);
+            var mine = found.GetComponents(type);
+            int idx = System.Array.IndexOf(all, o);
+            return idx >= 0 && idx < mine.Length ? mine[idx] : null;
+        }
+
         // Shader.Find only finds shaders in a build that something references (or that are always included).
         static void AlwaysInclude(string shaderName)
         {

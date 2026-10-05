@@ -1193,8 +1193,8 @@ MonoBehaviour:
   arcTowardViewer: 0.3
   overshoot: 0.08
   showArrow: 0
-  blockLength: 0.2
-  sideDistance: 0.2
+  blockLength: 0.3
+  sideDistance: 0.25
   comeOut: 0.3
   pivotYawDegrees: 45
   blockEuler: {x: 0, y: 90, z: 12}

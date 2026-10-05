@@ -40,6 +40,12 @@ public class ModelMoveController : MonoBehaviour
     public Vector3 initialPosition;
     public Quaternion initialRotation;
     public Vector3 initScale;
+    [Tooltip("R snaps back to the values above. Turned off by a timeline (NeuronalLossSequence) or PresentationMenu " +
+             "that drives this object: they reset to their own pose on R, without touching the video.")]
+    public bool resetKey = true;
+    [Tooltip("ON = WASD / QE and left drag move the model. OFF = no manual translation (a timeline can still move it); " +
+             "rotation and zoom still work.")]
+    public bool allowTranslation = false;
     [Header("Keyboard translation (WASD / QE)")]
     [Tooltip("Metres per second at SRDViewSpaceScale 1. Multiplied by the view-space scale when the toggle below is on.")]
     public float moveSpeed = 0.25f;
@@ -78,6 +84,9 @@ public class ModelMoveController : MonoBehaviour
     public bool zoomAroundBoundsCenter = true;
 
     [Header("Rotation options")]
+    [Tooltip("ON = turn about the vertical (Y) only: Left / Right arrows and horizontal right drag; Up / Down and " +
+             "vertical drag do nothing.")]
+    public bool yawOnly = true;
     [Tooltip("Flip the vertical (pitch) direction for both arrows and drag.")]
     public bool invertPitch = false;
     [Tooltip("Rotate about the centre of the renderer bounds instead of the transform pivot (the brain FBX pivot is off-centre).")]
@@ -107,7 +116,7 @@ public class ModelMoveController : MonoBehaviour
 
     void Update()
     {
-        Transform frame = (_srdManager != null && _srdManager.isActiveAndEnabled) ? _srdManager.transform : null;
+        Transform frame = BrainVolume.DisplayFrame.Get(_srdManager);   // the SRD, or a flat-screen rig standing in for it
         Vector3 right = frame != null ? frame.right : Vector3.right;
         Vector3 up = frame != null ? frame.up : Vector3.up;
         Vector3 forward = frame != null ? frame.forward : Vector3.forward;
@@ -122,7 +131,7 @@ public class ModelMoveController : MonoBehaviour
 
     void ResetModelTransform()
     {
-        if (Input.GetKey(KeyCode.R))
+        if (resetKey && Input.GetKey(KeyCode.R))
         {
             transform.position = initialPosition;
             transform.rotation = initialRotation;
@@ -132,13 +141,14 @@ public class ModelMoveController : MonoBehaviour
 
     private float SpeedScale()
     {
-        return (scaleSpeedWithViewSpace && _srdManager != null) ? _srdManager.SRDViewSpaceScale : 1f;
+        return scaleSpeedWithViewSpace ? BrainVolume.DisplayFrame.ViewSpaceScale(_srdManager) : 1f;
     }
 
     // ---------------------------------------------------------------- translation
 
     private void HandleKeyboardMove(Vector3 right, Vector3 up, Vector3 forward)
     {
+        if (!allowTranslation) return;
         var kb = Keyboard.current;
         if (kb == null) return;
 
@@ -196,7 +206,7 @@ public class ModelMoveController : MonoBehaviour
         {
             Rotate(right, up, delta.x * degreesPerPixel, delta.y * degreesPerPixel);
         }
-        else if (leftDragTranslates && mouse.leftButton.isPressed)
+        else if (allowTranslation && leftDragTranslates && mouse.leftButton.isPressed)
         {
             float k = metresPerPixel * SpeedScale();
             transform.position += right * (delta.x * k) + up * (delta.y * k);
@@ -210,7 +220,7 @@ public class ModelMoveController : MonoBehaviour
     private void Rotate(Vector3 right, Vector3 up, float horizontal, float vertical)
     {
         float yaw = -horizontal;                                  // -Y rotation moves the near (-Z) face toward +X
-        float pitch = (invertPitch ? -1f : 1f) * vertical;         // +X rotation moves the near (-Z) face toward +Y
+        float pitch = yawOnly ? 0f : (invertPitch ? -1f : 1f) * vertical;   // +X rotation moves the near (-Z) face toward +Y
 
         Vector3 pivot = rotateAroundBoundsCenter ? BoundsCenter() : transform.position;
         if (yaw != 0f) transform.RotateAround(pivot, up, yaw);

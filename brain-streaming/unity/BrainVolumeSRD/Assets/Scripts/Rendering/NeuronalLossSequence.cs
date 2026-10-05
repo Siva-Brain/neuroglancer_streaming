@@ -235,15 +235,50 @@ namespace BrainVolume
         public float CombineAmount =>
             returnToStart && _time >= _tCombine ? EaseInOutCubic((_time - _tCombine) / Mathf.Max(0.01f, combineSeconds)) : 0f;
         public float Time => _time;
+        /// <summary>Standby (the "Presentation All" scene, PresentationMenu): the timeline still loads in Start but
+        /// does not prepare, play or draw, and keeps its split brains / block / card hidden, so several timelines
+        /// can share one brain. Leaving standby starts again from 0:00 at the start pose.</summary>
+        public bool Standby => _standby;
+        public void SetStandby(bool on)
+        {
+            _standby = on;
+            if (on) { _playing = false; HideAll(); return; }
+            if (_vol == null) return;
+            if (_prepared) ResetToStart();
+            else PlaceAtStart();   // still waiting for its volumes: don't leave the brain where the previous timeline left it
+        }
+        /// <summary>Put the brain at this timeline's start pose, uncut, without starting anything (PresentationMenu's
+        /// "brain only" view). False until the timeline has found its brain (Start).</summary>
+        public bool PlaceAtStart()
+        {
+            if (_vol == null) return false;
+            if (useStartPose)
+            {
+                _vol.transform.SetPositionAndRotation(startPosition, Quaternion.Normalize(startRotation));
+                _vol.transform.localScale = Vector3.one * startBrainScale;
+            }
+            _vol.SlicePosition = 0f;
+            return true;
+        }
         /// <summary>When the hold starts (everything else done): AxonRepairTimeline runs its stages from here.</summary>
         public float HoldStart => _tEnd;
         public float CombineStart => _tCombine;
         public bool IsPlaying => _playing;
-        public bool Ready => _prepared;
+        public bool Ready => _prepared && !_standby;
         public void Play() { if (_time >= TotalSeconds) SeekTo(0f); _playing = true; }
         public void Pause() { _playing = false; }
         public void TogglePlay() { if (_playing) Pause(); else Play(); }
         public void Restart() { SeekTo(0f); _playing = true; }
+        /// <summary>Undo hand / mouse / key moves (R): the brain goes back to the pose this timeline gives it at the
+        /// current time (start position and size; rotation, cut and split as at Time). Time and play / pause stay.</summary>
+        public void ResetPose()
+        {
+            if (_vol == null || !_prepared || _standby) return;
+            Transform tr = _vol.transform;
+            tr.SetPositionAndRotation(_startPos, _start);
+            tr.localScale = _startScale;
+            _seeked = true;   // LateUpdate re-applies everything at the current time
+        }
         public void SeekTo(float seconds)
         {
             _time = Mathf.Clamp(seconds, 0f, TotalSeconds);
@@ -260,26 +295,47 @@ namespace BrainVolume
             }
         }
 
-        // display panel (SRD), as in SRD_test's StoryController.PanelPoint / PanelRotation
-        public bool HasPanel => _srd != null && _srd.isActiveAndEnabled && _srd.DisplayEdges != null &&
-                                _srd.DisplayEdges.LeftBottom != null && _srd.DisplayEdges.RightUp != null;
+        // display panel (SRD), as in SRD_test's StoryController.PanelPoint / PanelRotation. On a flat screen
+        // (FlatDisplayRig, SRD inactive) the rig's virtual panel stands in, with the same edges.
+        bool SrdPanel => _srd != null && _srd.isActiveAndEnabled && _srd.DisplayEdges != null &&
+                         _srd.DisplayEdges.LeftBottom != null && _srd.DisplayEdges.RightUp != null;
+        public bool HasPanel => SrdPanel || FlatDisplayRig.Instance != null;
+        void Edges(out Vector3 lb, out Vector3 rb, out Vector3 lu, out Vector3 ru)
+        {
+            if (SrdPanel)
+            {
+                var e = _srd.DisplayEdges;
+                lb = e.LeftBottom.position; rb = e.RightBottom.position; lu = e.LeftUp.position; ru = e.RightUp.position;
+                return;
+            }
+            var r = FlatDisplayRig.Instance;
+            lb = r.LeftBottom; rb = r.RightBottom; lu = r.LeftUp; ru = r.RightUp;
+        }
         public Vector3 PanelPoint(Vector2 p)
         {
-            var e = _srd.DisplayEdges;
+            Edges(out var lb, out var rb, out var lu, out var ru);
             float fx = Mathf.Clamp01(p.x * 0.5f + 0.5f), fy = Mathf.Clamp01(p.y);
-            Vector3 bottom = Vector3.Lerp(e.LeftBottom.position, e.RightBottom.position, fx);
-            Vector3 top = Vector3.Lerp(e.LeftUp.position, e.RightUp.position, fx);
+            Vector3 bottom = Vector3.Lerp(lb, rb, fx);
+            Vector3 top = Vector3.Lerp(lu, ru, fx);
             return Vector3.Lerp(bottom, top, fy);
         }
         /// <summary>Rotation whose forward points AWAY from the viewer through the panel, up along the panel.</summary>
         public Quaternion PanelRotation()
         {
-            var e = _srd.DisplayEdges;
-            Vector3 up = (e.LeftUp.position - e.LeftBottom.position).normalized;
-            Vector3 right = (e.RightBottom.position - e.LeftBottom.position).normalized;
+            Edges(out var lb, out var rb, out var lu, out _);
+            Vector3 up = (lu - lb).normalized;
+            Vector3 right = (rb - lb).normalized;
             return Quaternion.LookRotation(Vector3.Cross(right, up), up);
         }
-        public float PanelWidth => HasPanel ? Vector3.Distance(_srd.DisplayEdges.LeftBottom.position, _srd.DisplayEdges.RightBottom.position) : 1f;
+        public float PanelWidth
+        {
+            get
+            {
+                if (!HasPanel) return 1f;
+                Edges(out var lb, out var rb, out _, out _);
+                return Vector3.Distance(lb, rb);
+            }
+        }
 
         // ------------------------------------------------------------------ state
 
@@ -292,7 +348,7 @@ namespace BrainVolume
         GameObject _canvas;
         CanvasGroup _group;
 
-        bool _prepared, _playing, _seeked;
+        bool _prepared, _playing, _seeked, _standby;
         float _time, _endSpin, _lastApplied = -1f;
         float _tRotate, _tSplit, _tSlice, _tRecede, _tGrow, _tGrowEnd, _tLabelEnd, _tBack, _tTurn, _tEnd, _tCombine, _tReturn;   // phase starts
         Quaternion _start, _sagittal, _rootRot;
@@ -320,6 +376,8 @@ namespace BrainVolume
             if (_vol == null) { Debug.LogError("[Loss] No active brain volume (BrickVolumeLoader or FusedVolumeLoader) in the scene."); return; }
             Debug.Log($"[Loss] Timeline drives '{_vol.transform.name}' ({_vol.GetType().Name}).");
             _mover = _vol.transform.GetComponent("ModelMoveController") as Behaviour;
+            // R is this timeline's (ResetPose: the pose at the current time), not a snap to the scene's pose
+            if (_mover is ModelMoveController mmc) mmc.resetKey = false;
             _srd = SRDSceneEnvironment.GetSRDManager();
             if (splitVolume != null && splitVolume.isActiveAndEnabled && splitVolume is ISliceableVolume sv && sv != _vol)
             {
@@ -405,11 +463,25 @@ namespace BrainVolume
             _start = Quaternion.Euler(initialEuler);
             _turn = endY - initialEuler.y + Mathf.Sign(endY - initialEuler.y == 0f ? 1f : endY - initialEuler.y) * 360f * extraTurns;
             _sagittal = YRot(1f);
+            if (useStartPose) _start = Quaternion.Normalize(startRotation);
+            ResetToStart();
+
+            _anchorCut = new Vector3(
+                useRoiCentre ? 0.5f * (roiX0 + roiX1) / roiLevelWidth : pointOnCut.x,
+                useRoiCentre ? 0.5f * (roiY0 + roiY1) / roiLevelHeight : pointOnCut.y,
+                _vol.SliceFromHighZ ? 1f - clippingDepth : clippingDepth);
+            FinalPose(out _endPos, out _rootRot);
+            BuildTarget();
+            _editing = controlsMoveBlock;
+        }
+
+        // The start pose and 0:00 (in Prepare, and again whenever the timeline leaves standby).
+        void ResetToStart()
+        {
             if (useStartPose)
             {
                 // the only time the timeline writes the brain's position/scale: the start pose, once
                 Transform tr = _vol.transform;
-                _start = Quaternion.Normalize(startRotation);
                 tr.SetPositionAndRotation(startPosition, _start);
                 tr.localScale = Vector3.one * startBrainScale;
             }
@@ -421,21 +493,23 @@ namespace BrainVolume
             // cut from whichever end of the left-right axis faces the viewer at the end pose
             _vol.SliceFromHighZ = Vector3.Dot(_sagittal * Vector3.back, _toViewer) < 0f;
 
-            _anchorCut = new Vector3(
-                useRoiCentre ? 0.5f * (roiX0 + roiX1) / roiLevelWidth : pointOnCut.x,
-                useRoiCentre ? 0.5f * (roiY0 + roiY1) / roiLevelHeight : pointOnCut.y,
-                _vol.SliceFromHighZ ? 1f - clippingDepth : clippingDepth);
-            FinalPose(out _endPos, out _rootRot);
-            BuildTarget();
-            _editing = controlsMoveBlock;
-
-            _time = 0f; _seeked = true;
+            _time = 0f; _endSpin = 0f; _seeked = true;
             _playing = playOnStart;
+        }
+
+        // Standby: nothing of this timeline shows (the brain itself belongs to whichever timeline is selected).
+        void HideAll()
+        {
+            _visible = false; _alpha = 0f; _arrow = 0f;
+            if (_canvas != null) _canvas.SetActive(false);
+            if (_split != null && _split.Loaded && _splitRenderer.enabled) _splitRenderer.enabled = false;
+            if (splitThird != null) splitThird.visibility = 0f;
+            if (_blockMover != null) _blockMover.enabled = false;
         }
 
         void Update()
         {
-            if (_vol == null || !_vol.Loaded) return;
+            if (_vol == null || !_vol.Loaded || _standby) return;
             if (!_prepared && _split != null && !_split.Loaded) return;   // start once both brains are in
             if (!_prepared && splitThird != null && splitThird.isActiveAndEnabled && !splitThird.Loaded) return;
             if (!_prepared) foreach (var ready in waitFor) if (!ready()) return;
@@ -452,6 +526,7 @@ namespace BrainVolume
             else if (_time >= TotalSeconds) _endSpin += spinDegreesPerSecond * UnityEngine.Time.deltaTime;   // keep turning
 
             var kb = Keyboard.current;
+            if (kb != null && kb.rKey.wasPressedThisFrame) ResetPose();
             if (kb != null && _target != null)
             {
                 if (kb.mKey.wasPressedThisFrame) SetEditing(!_editing);
@@ -479,6 +554,8 @@ namespace BrainVolume
                 _target.localScale = Vector3.one;
             }
             _blockMover = go.AddComponent<ModelMoveController>();
+            _blockMover.allowTranslation = true;   // placing the block (only the brain is not moved by hand)
+            _blockMover.yawOnly = false;
             _blockMover.enabled = false;
         }
 
@@ -533,7 +610,8 @@ namespace BrainVolume
         // After every Update (FusedVolumeLoader's keys, ModelMoveController), so the timeline wins.
         void LateUpdate()
         {
-            if (!_prepared) return;
+            // every frame: a split brain may finish loading while in standby / before the start
+            if (_standby || !_prepared) { HideAll(); return; }
             bool moved = _time != _lastApplied || _seeked;
             Apply(_time, moved);
             _lastApplied = _time;
@@ -826,7 +904,7 @@ namespace BrainVolume
 
         void GetFrame(out Vector3 right, out Vector3 up, out Vector3 fwd)
         {
-            Transform f = (_srd != null && _srd.isActiveAndEnabled) ? _srd.transform : null;
+            Transform f = DisplayFrame.Get(_srd);   // the SRD, or the flat-screen rig standing in for it
             right = f != null ? f.right : Vector3.right;
             up = f != null ? f.up : Vector3.up;
             fwd = f != null ? f.forward : Vector3.forward;   // away from the viewer

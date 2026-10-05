@@ -17,6 +17,24 @@
       },
       "hash": "8be7d96d95aa3e262894c64412f0df3b432efa05"
     },
+    "com.ultraleap.tracking": {
+      "version": "7.3.0",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {},
+      "url": "https://package.openupm.com"
+    },
+    "com.ultraleap.tracking.preview": {
+      "version": "7.3.0",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {
+        "com.ultraleap.tracking": "7.3.0",
+        "com.unity.inputsystem": "1.5.0",
+        "com.unity.ugui": "1.0.0"
+      },
+      "url": "https://package.openupm.com"
+    },
     "com.unity.collab-proxy": {
       "version": "2.13.6",
       "depth": 0,

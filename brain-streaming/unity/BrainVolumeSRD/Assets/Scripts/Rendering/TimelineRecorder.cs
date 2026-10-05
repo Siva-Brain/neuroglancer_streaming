@@ -45,6 +45,8 @@ namespace BrainVolume
             if (srd != null)
                 foreach (var c in srd.GetComponentsInChildren<Camera>(true))
                     if (c.name == "WatcherCamera") _watcher = c;
+            // flat screen (SRD inactive): record what the flat camera shows
+            if (_watcher == null && FlatDisplayRig.Instance != null) _watcher = FlatDisplayRig.Instance.viewCamera;
             if (recordOnPlay && timeline != null) _run = StartCoroutine(Run());
         }
 

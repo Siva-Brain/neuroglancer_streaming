@@ -609,10 +609,11 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.TimelineDensityOverlay
   timeline: {fileID: 2100000003}
   appearAtMark: Neuronal loss
+  spinDegreesPerSecond: 20
   delay: 0
   comeOutOfBrain: 1
   fadeSeconds: 1.5
-  title: Fib
+  title: Fibrinogen
   tagLine: 
   cardColor: {r: 1, g: 1, b: 1, a: 1}
   titleColor: {r: 0.04, g: 0.04, b: 0.06, a: 1}
@@ -1295,7 +1296,7 @@ MonoBehaviour:
   comeOut: 0.1
   pivotYawDegrees: 45
   blockEuler: {x: 0, y: 90, z: 12}
-  spinDegreesPerSecond: 0
+  spinDegreesPerSecond: 20
   controlsMoveBlock: 1
   useCustomFinal: 0
   finalPosition: {x: 0, y: 0, z: 0}
@@ -1431,6 +1432,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.TimelineDensityOverlay
   timeline: {fileID: 2100000003}
   appearAtMark: Neuronal loss
+  spinDegreesPerSecond: 20
   delay: 0
   comeOutOfBrain: 1
   fadeSeconds: 1.5

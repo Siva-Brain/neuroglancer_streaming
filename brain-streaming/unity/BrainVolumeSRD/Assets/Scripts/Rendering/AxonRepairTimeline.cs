@@ -88,7 +88,7 @@ namespace BrainVolume
             if (brain == null) brain = FindFirstObjectByType<BrainVolume.SRD.BrickVolumeLoader>();
             _brainOpacity = brain != null ? brain.opacity : 1f;
             var srd = SRDSceneEnvironment.GetSRDManager();
-            _frame = srd != null && srd.isActiveAndEnabled ? srd.transform : null;
+            _frame = DisplayFrame.Get(srd);   // the SRD, or the flat-screen rig standing in for it
             if (axons != null) axons.visibility = 0f;
             BuildCard();
         }
@@ -99,6 +99,7 @@ namespace BrainVolume
             {
                 if (axons != null) axons.visibility = 0f;
                 if (_canvas != null) _canvas.SetActive(false);
+                if (brain != null) brain.opacity = _brainOpacity;   // e.g. another timeline selected mid-shell
                 return;
             }
             float t = timeline.Time - timeline.HoldStart;

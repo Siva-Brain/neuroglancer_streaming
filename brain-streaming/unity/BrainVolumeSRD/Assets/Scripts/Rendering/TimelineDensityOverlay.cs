@@ -26,6 +26,9 @@ namespace BrainVolume
                  "start size and overshoot). OFF = just fade in at the final place over fadeSeconds.")]
         public bool comeOutOfBrain = true;
         public float fadeSeconds = 1.5f;
+        [Tooltip("Turntable spin about the vertical once the map appears (deg/s; 0 = none). On top of the brain's " +
+                 "rotation when it follows the brain; the brain itself doesn't spin.")]
+        public float spinDegreesPerSecond = 0f;
 
         [Header("Label card")]
         public string title = "Astrocytes";
@@ -48,15 +51,17 @@ namespace BrainVolume
         CanvasGroup _group;
         Transform _frame;
         Vector3 _finalPos, _finalScale;
+        Quaternion _baseRot;   // the scene rotation (used when not following the brain's rotation)
 
         void Start()
         {
             _finalPos = transform.position;
             _finalScale = transform.localScale;
+            _baseRot = transform.rotation;
             _vol = GetComponent<NpzDensityVolume>();
             if (timeline == null) timeline = FindFirstObjectByType<NeuronalLossSequence>();
             var srd = SRDSceneEnvironment.GetSRDManager();
-            _frame = srd != null && srd.isActiveAndEnabled ? srd.transform : null;
+            _frame = DisplayFrame.Get(srd);   // the SRD, or the flat-screen rig standing in for it
             _vol.visibility = 0f;
             BuildCard();
         }
@@ -99,6 +104,14 @@ namespace BrainVolume
                 _vol.visibility = Mathf.Clamp01(t / arrive);
             }
             _vol.visibility *= Mathf.Clamp01((1f - back) / 0.25f);
+            if (spinDegreesPerSecond != 0f)
+            {
+                // a function of the time since it appeared (seeking / looping lands exactly); on top of the brain's
+                // rotation of this frame when NpzDensityVolume follows it, else on top of the scene rotation
+                bool following = _vol.follow != null && _vol.follow.isActiveAndEnabled && _vol.followRotation;
+                Quaternion baseRot = following ? transform.rotation : _baseRot;
+                transform.rotation = Quaternion.AngleAxis(spinDegreesPerSecond * Mathf.Max(0f, t), Vector3.up) * baseRot;
+            }
             float label = Mathf.Clamp01((t - arrive - labelDelay) / Mathf.Max(0.01f, labelSeconds)) *
                           Mathf.Clamp01(1f - back * 5f);
             _canvas.SetActive(label > 0f);

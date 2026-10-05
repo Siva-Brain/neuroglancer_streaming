@@ -17,7 +17,7 @@ namespace BrainVolume
     /// WatcherCamera (else Camera.main).
     ///
     /// Keys:   Space          play / pause
-    ///         R              restart from the beginning
+    ///         R              (the timeline's: brain back to its pose at the current time, video untouched)
     ///         ,  /  .        step 1 s back / forward (hold: scrub at Scrub Speed x)
     ///         [  /  ]        step 5 s back / forward
     ///         Home / End     start / end
@@ -44,6 +44,13 @@ namespace BrainVolume
         [Header("Placement")]
         [Tooltip("ON = on the display panel at Panel Position (x -1..1, y 0..1). OFF = in front of the view camera.")]
         public bool placeOnDisplayPanel = true;
+        [Tooltip("Set by PresentationMenu: the seek bar sits just below this bar (same plane and tilt) and follows it " +
+                 "wherever it is placed; Panel Position etc. are then unused.")]
+        public RectTransform below;
+        [Tooltip("With Below: the seek bar's width as a fraction of that bar's width.")]
+        public float belowWidth = 0.6f;
+        [Tooltip("With Below: the gap between the two bars, in that bar's canvas units.")]
+        public float belowGap = 10f;
         public Vector2 panelPosition = new Vector2(0f, 0.08f);
         [Tooltip("Offset toward the viewer along the panel normal, as a fraction of the panel width.")]
         public float towardViewer = 0.03f;
@@ -65,7 +72,7 @@ namespace BrainVolume
         public float holdDelay = 0.35f;
 
         /// <summary>True while the mouse button is held down on this bar (ModelMoveController then ignores the mouse).</summary>
-        public static bool PointerCaptured { get; private set; }
+        public static bool PointerCaptured { get; internal set; }   // also set by PresentationMenu
         public bool Visible { get; private set; }
 
         Camera _cam;
@@ -75,7 +82,7 @@ namespace BrainVolume
         Text _time, _step;
         Sprite _playSprite, _pauseSprite;
         Texture2D _playTex, _pauseTex;
-        bool _built, _scrubbing, _hover;
+        bool _built, _rebuilt, _scrubbing, _hover;
         double _holdStart = -1;
         int _holdDir;
 
@@ -102,12 +109,23 @@ namespace BrainVolume
         void Update()
         {
             if (timeline == null || !timeline.Ready) return;
-            if (!_built) { Build(); SetVisible(visibleOnStart); }
+            if (!_built) { Build(); SetVisible(_rebuilt ? Visible : visibleOnStart); _rebuilt = true; }   // a rebuild keeps H/T's choice
             if (keysEnabled) HandleKeys();
             Place();
             if (Visible) HandleMouse();
             else { _scrubbing = false; PointerCaptured = false; }
             Refresh();
+        }
+
+        /// <summary>Drive another timeline (PresentationMenu): the bar is rebuilt for its length and step ticks.</summary>
+        public void SetTimeline(NeuronalLossSequence t)
+        {
+            if (t == timeline) return;
+            timeline = t;
+            if (_root != null) Destroy(_root);
+            _root = null;
+            _built = false;
+            _scrubbing = false;
         }
 
         public void SetVisible(bool on)
@@ -126,7 +144,6 @@ namespace BrainVolume
             if (kb == null) return;
             if (kb.hKey.wasPressedThisFrame || kb.tKey.wasPressedThisFrame) Toggle();
             if (kb.spaceKey.wasPressedThisFrame) timeline.TogglePlay();
-            if (kb.rKey.wasPressedThisFrame) timeline.Restart();
             if (kb.homeKey.wasPressedThisFrame) timeline.SeekTo(0f);
             if (kb.endKey.wasPressedThisFrame) timeline.SeekTo(timeline.TotalSeconds);
             if (kb.leftBracketKey.wasPressedThisFrame) timeline.SeekTo(timeline.Time - bigStepSeconds);
@@ -200,9 +217,26 @@ namespace BrainVolume
 
         // ------------------------------------------------------------------ placement
 
+        // Also after every Update: the bar followed (PresentationMenu) places itself later in the frame.
+        void LateUpdate()
+        {
+            if (_root != null && below != null) Place();
+        }
+
         void Place()
         {
             var t = _root.transform;
+            if (below != null && below.gameObject.activeInHierarchy)
+            {
+                // same plane as the bar above, centred under it: its bottom edge, the gap, then half this bar
+                float unit = below.lossyScale.y;
+                float s = belowWidth * below.rect.width * below.lossyScale.x / barWidth;
+                t.localScale = Vector3.one * s;
+                Quaternion rot = below.rotation;
+                Vector3 bottom = below.TransformPoint(new Vector3(below.rect.center.x, below.rect.yMin, 0f));
+                t.SetPositionAndRotation(bottom - rot * Vector3.up * (belowGap * unit + 0.5f * barHeight * s), rot);
+                return;
+            }
             if (placeOnDisplayPanel && timeline.HasPanel)
             {
                 float pw = timeline.PanelWidth;
@@ -257,10 +291,10 @@ namespace BrainVolume
             _bar = UiKit.Rect("Bar", _root.transform);
             _bar.anchorMin = _bar.anchorMax = _bar.pivot = new Vector2(0.5f, 0.5f);
             _bar.sizeDelta = new Vector2(barWidth, barHeight);
-            UiKit.Stretch(UiKit.Panel("Bg", _bar, BarBg).rectTransform);
+            UiKit.Stretch(UiKit.Rounded(UiKit.Panel("Bg", _bar, BarBg), barHeight * 0.5f).rectTransform);
 
             // play/pause button (left)
-            _buttonBg = UiKit.Panel("Button", _bar, ButtonBg);
+            _buttonBg = UiKit.Rounded(UiKit.Panel("Button", _bar, ButtonBg), buttonSize * 0.5f);
             _button = _buttonBg.rectTransform;
             Left(_button, padding, buttonSize, buttonSize);
             _playSprite = MakeIcon(false, out _playTex);
@@ -282,10 +316,10 @@ namespace BrainVolume
             // track with fill, a tick per step and the knob
             float trackX = padding + buttonSize + 14f;
             float trackW = barWidth - trackX - (padding + 126f + 156f) - 8f;
-            var trackImg = UiKit.Panel("Track", _bar, TrackCol);
+            var trackImg = UiKit.Rounded(UiKit.Panel("Track", _bar, TrackCol), trackHeight * 0.5f);
             _track = trackImg.rectTransform;
             Left(_track, trackX, trackW, trackHeight);
-            var fillImg = UiKit.Panel("Fill", _track, FillCol);
+            var fillImg = UiKit.Rounded(UiKit.Panel("Fill", _track, FillCol), trackHeight * 0.5f);
             _fill = fillImg.rectTransform;
             _fill.anchorMin = _fill.anchorMax = new Vector2(0f, 0.5f); _fill.pivot = new Vector2(0f, 0.5f);
             _fill.anchoredPosition = Vector2.zero; _fill.sizeDelta = new Vector2(0f, trackHeight);
@@ -315,7 +349,7 @@ namespace BrainVolume
         }
 
         /// <summary>32x32 white icon on transparent: a right-pointing triangle (play) or two bars (pause).</summary>
-        static Sprite MakeIcon(bool pause, out Texture2D tex)
+        internal static Sprite MakeIcon(bool pause, out Texture2D tex)
         {
             const int n = 32;
             tex = new Texture2D(n, n, TextureFormat.RGBA32, false) { hideFlags = HideFlags.DontSave, filterMode = FilterMode.Bilinear, wrapMode = TextureWrapMode.Clamp };
