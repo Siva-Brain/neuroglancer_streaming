@@ -20,7 +20,7 @@ namespace BrainVolume
     /// magnifying lens in the hand (LeapLens).
     ///
     /// Mouse: click a button (ray from the SRD WatcherCamera, like the seek bar).
-    /// Keys:  1 2 3 4 (also the numpad) select V1..V4, 0 = back to the brain only; Space etc. = the seek bar's keys.
+    /// Keys:  1 2 3 4 (also the numpad) select V1..V4, 0 = back to the brain only; S = Slice, L = Lens; Space etc. = the seek bar's keys.
     /// Select(i) / ShowBrainOnly() / TogglePlay() / ButtonCount / ButtonRect(i) are public for other input (hand tracking).
     /// </summary>
     [DefaultExecutionOrder(-40)]   // after TimelineTransportUI (-50), before ModelMoveController
@@ -289,6 +289,9 @@ namespace BrainVolume
             // R with no version selected: the brain back to the idle pose (with a version, its timeline resets
             // the pose at the current time and the video keeps playing; NeuronalLossSequence.ResetPose)
             if (kb.rKey.wasPressedThisFrame && Selected < 0) _idlePlaced = false;
+            // S / L = the Slice / Lens toggles, like clicking their buttons
+            if (kb.sKey.wasPressedThisFrame) Press(SliceButton);
+            if (kb.lKey.wasPressedThisFrame) Press(LensButton);
         }
 
         // ------------------------------------------------------------------ mouse

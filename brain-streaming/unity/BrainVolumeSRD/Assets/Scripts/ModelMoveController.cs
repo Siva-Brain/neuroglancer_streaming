@@ -223,7 +223,8 @@ public class ModelMoveController : MonoBehaviour
         float pitch = yawOnly ? 0f : (invertPitch ? -1f : 1f) * vertical;   // +X rotation moves the near (-Z) face toward +Y
 
         Vector3 pivot = rotateAroundBoundsCenter ? BoundsCenter() : transform.position;
-        if (yaw != 0f) transform.RotateAround(pivot, up, yaw);
+        // Yaw about world Y like LeapBrainManipulator, not the display frame's up (tilted -45° about X with the panel).
+        if (yaw != 0f) transform.RotateAround(pivot, Vector3.up, yaw);
         if (pitch != 0f) transform.RotateAround(pivot, right, pitch);
     }
 

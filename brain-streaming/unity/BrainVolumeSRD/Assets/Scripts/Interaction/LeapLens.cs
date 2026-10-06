@@ -161,6 +161,7 @@ namespace BrainVolume
             _placed = false;
             _handSeen = false;
             if (on && _hands != null && _hands.slide != null) _hands.slide.SetActive(false);   // one tool per hand
+            if (!on && _loader != null) _loader.LensLevel = -1;   // its finer bricks are freed
             Debug.Log(on ? "[Lens] Lens on." : "[Lens] Lens off.");
         }
 
@@ -190,7 +191,13 @@ namespace BrainVolume
                 lines.Add($"x {Mm.x:0.00}   y {Mm.y:0.00}   z {Mm.z:0.00} mm");
                 Vector3 vox = _loader.VoxelMm;
                 if (vox.x > 0f && vox.y > 0f && vox.z > 0f)
+                {
                     lines.Add($"L{_loader.level} voxel   {Mathf.FloorToInt(Mm.x / vox.x)}, {Mathf.FloorToInt(Mm.y / vox.y)}, {Mathf.FloorToInt(Mm.z / vox.z)}");
+                    // the level the box shows (finer ones stream in as it zooms), its in-plane voxel
+                    int shown = _loader.LensShownLevel >= 0 ? _loader.LensShownLevel : _loader.level;
+                    float um = vox.x * 1000f * Mathf.Pow(2f, shown - _loader.level);
+                    lines.Add($"lens L{shown}  {um:0.#} um  x{Zoom:0.#}");
+                }
             }
             else lines.Add($"x {u.x:0.000}   y {u.y:0.000}   z {u.z:0.000} (of the volume)");
             if (!OnBrain) lines.Add("not on the brain");
@@ -210,6 +217,17 @@ namespace BrainVolume
 
         float Scale => _hands != null ? _hands.HandScale : 1f;
         float Zoom => Mathf.Clamp(zoom, 1f, Mathf.Max(1f, maxZoom));
+
+        // The bricked level the box asks for: the brain's own level at 1x, one finer per x2 of zoom, never finer
+        // than the finest on disk; -1 = the brain's level (nothing extra to stream).
+        int LensLevelForZoom()
+        {
+            if (_loader == null || _loader.Levels == null || _loader.Levels.Count == 0) return -1;
+            int finest = _loader.level;
+            foreach (int l in _loader.Levels) finest = Mathf.Min(finest, l);
+            int want = Mathf.Max(finest, _loader.level - Mathf.FloorToInt(Mathf.Log(Zoom, 2f) + 0.01f));
+            return want < _loader.level ? want : -1;
+        }
 
         // mouse wheel / + / -: x2 per step
         void HandleZoom()
@@ -329,6 +347,10 @@ namespace BrainVolume
                 BuildText();
                 return;
             }
+
+            // each x2 of zoom asks for the next finer level (down to the finest on disk); the loader streams its
+            // bricks in for this camera and shows a coarser one until they are loaded
+            if (_loader != null) _loader.LensLevel = LensLevelForZoom();
 
             // the box's own angular size: the brain shows at the size it has around the box (1x), / zoom
             _lensCam.transform.SetPositionAndRotation(_eye, Quaternion.LookRotation(toPoint, _eyeUp));
