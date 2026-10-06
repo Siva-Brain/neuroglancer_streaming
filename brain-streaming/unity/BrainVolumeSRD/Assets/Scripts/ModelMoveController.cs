@@ -192,7 +192,7 @@ public class ModelMoveController : MonoBehaviour
         if (mouse == null) return;
         if (BrainVolume.TimelineTransportUI.PointerCaptured) return;   // the pointer is on the timeline seek bar
 
-        if (scrollZoomEnabled)
+        if (scrollZoomEnabled && !BrainVolume.LeapLens.TakesZoom)   // with the lens on, the wheel zooms its box
         {
             float scroll = mouse.scroll.ReadValue().y;
             if (Mathf.Abs(scroll) > 10f) scroll /= 120f;   // raw Windows wheel units -> notches
@@ -231,7 +231,7 @@ public class ModelMoveController : MonoBehaviour
 
     private void HandleZoomKeys()
     {
-        if (!zoomKeysEnabled) return;
+        if (!zoomKeysEnabled || BrainVolume.LeapLens.TakesZoom) return;   // the lens zooms its box instead
         var kb = Keyboard.current;
         if (kb == null) return;
 

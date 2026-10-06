@@ -1,6 +1,7 @@
 using SRD.Core;
 using SRD.Utils;
 using UnityEngine;
+using UnityEngine.InputSystem;
 
 namespace BrainVolume
 {
@@ -17,10 +18,15 @@ namespace BrainVolume
     /// reset (R) moves it too. A pinch with the slide's hand stops the slide where it is (edges amber); the next
     /// pinch lets the hand move it again, from there. Turning the slide off keeps the cut it made.
     ///
+    /// Mouse: while the slide is on, hold the left button (not on the menu / seek bar) and move the mouse to move the
+    /// slide: along the rail as it looks on screen, or up = deeper when the rail points at the viewer. Releasing the
+    /// button stops it there. Meanwhile the left drag doesn't move the brain (right drag still turns it).
+    ///
     /// Drawn from the volume's Drawn event (like the hands), so it is never hidden by the brain, as a thin pane of
     /// glass (Brain/GlassSlide): clear face-on, more reflective tilted away, bright bevelled edges, light streaks
     /// that move with the viewer's head, and a frosted tab. Edges and tab turn magenta while the hand moves it.
     /// </summary>
+    [DefaultExecutionOrder(-30)]   // after the menu / seek bar (a click on them is not a slide drag), before ModelMoveController
     public sealed class LeapSliceSlide : MonoBehaviour
     {
         [Tooltip("Show the slide from the start (else the menu's Slice button turns it on).")]
@@ -33,6 +39,13 @@ namespace BrainVolume
         public float park = 0.06f;
         [Tooltip("Slide movement per hand movement along the rail (1 = follows the hand exactly).")]
         public float gain = 1.5f;
+
+        [Header("Mouse (hold the left button)")]
+        public bool mouseDrag = true;
+        [Tooltip("When the rail points at the viewer (it looks shorter than this many pixels on screen): moving the " +
+                 "mouse up this many pixels cuts through the whole brain.")]
+        public float mousePixelsPerBrain = 600f;
+        public float minRailPixels = 120f;
 
         [Header("Tab (real metres, × the hands' scale)")]
         public float tabWidthMetres = 0.03f;
@@ -62,8 +75,12 @@ namespace BrainVolume
 
         /// <summary>Is the slide shown?</summary>
         public bool Active { get; private set; }
-        /// <summary>Is a hand moving the slide right now?</summary>
-        public bool Held { get; private set; }
+        /// <summary>Is a hand or the mouse moving the slide right now?</summary>
+        public bool Held => _handHeld || MouseHeld;
+        /// <summary>Is the mouse (left button held) moving the slide right now?</summary>
+        public bool MouseHeld { get; private set; }
+        bool _handHeld;
+        Camera _cam;
         /// <summary>Is the slide stopped (a pinch), so the hand doesn't move it until the next pinch?</summary>
         public bool Paused { get; private set; }
 
@@ -111,7 +128,7 @@ namespace BrainVolume
             }
             else
             {
-                Held = false;   // the cut stays (R resets it)
+                _handHeld = false; EndMouse();   // the cut stays (R resets it)
                 Debug.Log("[Slice] Slide off (cut kept).");
             }
         }
@@ -121,7 +138,7 @@ namespace BrainVolume
         {
             if (!Active) return;
             Paused = !Paused;
-            if (Paused) Held = false;
+            if (Paused) _handHeld = false;
             Debug.Log(Paused ? "[Slice] Stopped." : "[Slice] Moving again.");
         }
 
@@ -130,20 +147,69 @@ namespace BrainVolume
             if (!Active) return;
             if (_vol.SlicePosition <= 0f) FaceViewer();   // uncut: cut from the end facing the viewer
             _u = CurrentU;
-            Held = true;
+            _handHeld = true;
         }
 
         /// <summary>Move the slide by the hand's movement (world), along the rail only.</summary>
         public void Drag(Vector3 worldDelta)
         {
-            if (!Held) return;
+            if (!_handHeld) return;
             Vector3 rail = _vol.UnitCubeToWorld.GetColumn(2);   // unit z -> world (the whole depth)
             float dz = Vector3.Dot(worldDelta, rail) / Mathf.Max(1e-8f, rail.sqrMagnitude) * gain;
-            _u = Mathf.Clamp(_u + (_vol.SliceFromHighZ ? -dz : dz), -park, 1f);
+            MoveBy(_vol.SliceFromHighZ ? -dz : dz);
+        }
+
+        public void EndDrag() => _handHeld = false;
+
+        // along the rail, in cut units (+ = deeper)
+        void MoveBy(float du)
+        {
+            _u = Mathf.Clamp(_u + du, -park, 1f);
             _vol.SlicePosition = Mathf.Max(0f, _u);
         }
 
-        public void EndDrag() => Held = false;
+        // ------------------------------------------------------------------ mouse
+
+        void HandleMouse()
+        {
+            var mouse = Mouse.current;
+            if (!mouseDrag || mouse == null || !Active || _vol == null || !_vol.Loaded) { EndMouse(); return; }
+            if (!mouse.leftButton.isPressed) { EndMouse(); return; }
+            if (!MouseHeld)
+            {
+                // a press on the menu / seek bar is theirs; the hand holding the slide keeps it
+                if (!mouse.leftButton.wasPressedThisFrame || TimelineTransportUI.PointerCaptured || _handHeld) return;
+                if (_vol.SlicePosition <= 0f) FaceViewer();   // uncut: cut from the end facing the viewer
+                _u = CurrentU;
+                MouseHeld = true;
+                Paused = false;
+                TimelineTransportUI.PointerCaptured = true;   // the left drag must not also move the brain
+                if (_hands != null && _hands.pauseTimelineOnGrab) _hands.PauseTimelines();   // it would pull the cut back
+                return;
+            }
+            Vector2 d = mouse.delta.ReadValue();
+            if (d.sqrMagnitude < 1e-6f) return;
+            // the rail on screen (pixels per whole depth, toward deeper); too short = it points at the viewer: up = deeper
+            var cam = LeapLens.FindWatcher(ref _cam);
+            Vector2 rail = Vector2.zero;
+            if (cam != null)
+            {
+                Matrix4x4 m = _vol.UnitCubeToWorld;
+                float z0 = _vol.SliceFromHighZ ? 1f : 0f;
+                Vector3 a = cam.WorldToScreenPoint(m.MultiplyPoint(new Vector3(0.5f, 0.5f, z0)));
+                Vector3 b = cam.WorldToScreenPoint(m.MultiplyPoint(new Vector3(0.5f, 0.5f, 1f - z0)));
+                if (a.z > 0f && b.z > 0f) rail = (Vector2)(b - a);
+            }
+            if (rail.magnitude >= minRailPixels) MoveBy(Vector2.Dot(d, rail) / rail.sqrMagnitude);
+            else MoveBy(d.y / Mathf.Max(1f, mousePixelsPerBrain));
+        }
+
+        void EndMouse()
+        {
+            if (!MouseHeld) return;
+            MouseHeld = false;
+            TimelineTransportUI.PointerCaptured = false;
+        }
 
         float Scale => _hands != null ? _hands.HandScale : 1f;
 
@@ -182,6 +248,7 @@ namespace BrainVolume
 
         void Update()
         {
+            HandleMouse();
             // highlights fade (once per frame, not per eye)
             float k = 1f - Mathf.Exp(-Time.unscaledDeltaTime / Mathf.Max(0.001f, highlightFade));
             _paneHi = Mathf.Lerp(_paneHi, Held ? 1f : 0f, k);

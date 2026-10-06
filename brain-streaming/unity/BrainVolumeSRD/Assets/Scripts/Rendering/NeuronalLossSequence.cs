@@ -87,6 +87,10 @@ namespace BrainVolume
         [Tooltip("Off = no Slice step: the brain stays whole (e.g. V4, where the fibres are shown inside it).")]
         public bool slicing = true;
         [Range(0.05f, 0.95f)] public float clippingDepth = 0.3f;
+        [Tooltip("-1 = cut to clippingDepth. Else cut until the cut face is this section (L4 index along z, 0 .. " +
+                 "sectionsInVolume - 1), whichever end the cut starts from (e.g. 150 = the IIP slide SL_354).")]
+        public int cutToSection = -1;
+        public int sectionsInVolume = 485;
         public float showBrain = 2.5f;
         [Tooltip("Seconds for the Y rotation (extra turns + the turn to the left sagittal view).")]
         public float rotate = 6f;
@@ -236,6 +240,18 @@ namespace BrainVolume
         /// <summary>Extra "loaded?" checks the timeline waits for before it starts (like splitThird). Fill in Awake.</summary>
         [System.NonSerialized] public System.Collections.Generic.List<System.Func<bool>> waitFor = new System.Collections.Generic.List<System.Func<bool>>();
         public float TotalSeconds => returnToStart ? _tReturn + returnSeconds : _tEnd + hold;
+
+        // how much is cut away at the end of the Slice step: clippingDepth, or down to cutToSection (the cut face on
+        // that section) from whichever end the cut starts
+        float Depth
+        {
+            get
+            {
+                if (cutToSection < 0 || _vol == null) return clippingDepth;
+                float z = (cutToSection + 0.5f) / Mathf.Max(1, sectionsInVolume);
+                return Mathf.Clamp01(_vol.SliceFromHighZ ? 1f - z : z);
+            }
+        }
         /// <summary>0 -> 1 while the block / maps fly back into the brain (Combine step), else 0.</summary>
         public float CombineAmount =>
             returnToStart && _time >= _tCombine ? EaseInOutCubic((_time - _tCombine) / Mathf.Max(0.01f, combineSeconds)) : 0f;
@@ -474,7 +490,7 @@ namespace BrainVolume
             _anchorCut = new Vector3(
                 useRoiCentre ? 0.5f * (roiX0 + roiX1) / roiLevelWidth : pointOnCut.x,
                 useRoiCentre ? 0.5f * (roiY0 + roiY1) / roiLevelHeight : pointOnCut.y,
-                _vol.SliceFromHighZ ? 1f - clippingDepth : clippingDepth);
+                _vol.SliceFromHighZ ? 1f - Depth : Depth);
             FinalPose(out _endPos, out _rootRot);
             BuildTarget();
             _editing = controlsMoveBlock;
@@ -640,8 +656,8 @@ namespace BrainVolume
                     tr.rotation = Quaternion.AngleAxis(finalTurnDegrees * Ease((t - _tTurn) / finalTurnSeconds), Vector3.up) * _sagittal;
                 else tr.rotation = _sagittal;
 
-                float cut = t < _tSlice || !slicing ? 0f : clippingDepth * Ease((t - _tSlice) / slice);
-                if (sliceBack && t >= _tBack) cut = clippingDepth * (1f - Ease((t - _tBack) / sliceBackSeconds));
+                float cut = t < _tSlice || !slicing ? 0f : Depth * Ease((t - _tSlice) / slice);
+                if (sliceBack && t >= _tBack) cut = Depth * (1f - Ease((t - _tBack) / sliceBackSeconds));
                 _vol.SlicePosition = cut * (1f - ret);
 
                 Vector3 basePos = _startPos, baseScale = _startScale;

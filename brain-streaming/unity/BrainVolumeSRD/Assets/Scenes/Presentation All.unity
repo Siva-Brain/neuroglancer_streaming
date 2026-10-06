@@ -6176,6 +6176,10 @@ MonoBehaviour:
   - label: V4
     caption: Axon Repair
     timeline: {fileID: 2100000003}
+  - label: V5
+    caption: IIP Slide
+    timeline: {fileID: 976250310}
+    holdAtEnd: 0
   startIndex: -1
   idlePoseFrom: 3
   viewCamera: {fileID: 0}
@@ -6953,6 +6957,7 @@ Transform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 976250301}
+  - {fileID: 976250311}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
 --- !u!1 &1836338543
@@ -7328,3 +7333,157 @@ SceneRoots:
   - {fileID: 429692316}
   - {fileID: 1372576346}
   - {fileID: 779918829}
+--- !u!1 &976250309
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 976250311}
+  - component: {fileID: 976250310}
+  - component: {fileID: 976250312}
+  m_Layer: 0
+  m_Name: Timeline V5
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!114 &976250310
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 976250309}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 9e7755c6284963843a1005cde6f29657, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.NeuronalLossSequence
+  folder: NeuronalLoss
+  volumeFile: NeuronalLoss_48x48x117_RG.bytes
+  width: 48
+  height: 48
+  depth: 117
+  roiX0: 133
+  roiX1: 181
+  roiY0: 81
+  roiY1: 129
+  roiLevelWidth: 354
+  roiLevelHeight: 194
+  useRoiCentre: 0
+  pointOnCut: {x: 0.82, y: 0.28}
+  volume: {fileID: 16342192}
+  playOnStart: 1
+  loop: 0
+  transportBar: 0
+  useStartPose: 1
+  startPosition: {x: 0.082, y: 0.49, z: -0.57}
+  startRotation: {x: 0.5218822, y: -0.043947678, z: -0.8489394, w: 0.070777945}
+  startBrainScale: 1.35
+  initialEuler: {x: 0, y: 270, z: 180}
+  endY: 360
+  extraTurns: 0
+  showNeuronalLoss: 0
+  slicing: 1
+  clippingDepth: 0.3
+  cutToSection: 150
+  sectionsInVolume: 485
+  showBrain: 3
+  rotate: 6
+  slice: 6
+  grow: 6
+  labelDelay: 0.2
+  labelSeconds: 0.6
+  hold: 3.2
+  splitVolume: {fileID: 0}
+  split: 3
+  splitLeftPosition: {x: -0.36, y: 0.49, z: -0.57}
+  splitRightPosition: {x: 0.36, y: 0.49, z: -0.57}
+  splitThird: {fileID: 0}
+  splitThirdPosition: {x: -0.5, y: 0.49, z: -0.3}
+  splitScale: 1
+  sliceBack: 0
+  sliceBackDelay: 1.5
+  sliceBackSeconds: 4
+  recede: 0
+  recedeOffset: {x: 0, y: 0, z: 0.35}
+  recedeScale: 0.7
+  recedeDuringGrow: 0
+  returnToStart: 1
+  combineSeconds: 2.5
+  returnSeconds: 2.5
+  finalTurnSeconds: 0
+  finalTurnDegrees: 360
+  startScale: 0.02
+  straightPath: 1
+  arcTowardViewer: 0.3
+  overshoot: 0.08
+  showArrow: 0
+  blockLength: 0.3
+  sideDistance: 0.25
+  comeOut: 0.3
+  pivotYawDegrees: 45
+  blockEuler: {x: 0, y: 90, z: 12}
+  spinDegreesPerSecond: 0
+  controlsMoveBlock: 0
+  useCustomFinal: 0
+  finalPosition: {x: 0, y: 0, z: 0}
+  finalEuler: {x: 0, y: 0, z: 0}
+  finalScale: {x: 1, y: 1, z: 1}
+  stepCount: 96
+  tissueColor: {r: 0.42, g: 0.42, b: 0.45, a: 1}
+  tissueThreshold: 0.04
+  tissueDensity: 0.45
+  tissueShade: 0.8
+  lossColorLow: {r: 0.48, g: 0.3, b: 0.62, a: 1}
+  lossColorHigh: {r: 0.96, g: 0.52, b: 0.52, a: 1}
+  lossThreshold: 0.62
+  lossSoftness: 0.25
+  lossDensity: 2.4
+  lineColor: {r: 0.92, g: 0.94, b: 0.97, a: 1}
+  lineWidth: 0.0032
+  headLength: 0.035
+  headWidth: 0.026
+  tipGap: 0.008
+  anchorDotDiameter: 0.016
+  title: Neuronal loss
+  tagLine: "Stroke tissue  \xB7  3D histology stack"
+  cardColor: {r: 1, g: 1, b: 1, a: 1}
+  titleColor: {r: 0.04, g: 0.04, b: 0.06, a: 1}
+  tagColor: {r: 0.1, g: 0.1, b: 0.12, a: 1}
+  titleFontSize: 30
+  tagFontSize: 19
+  padding: 18
+  labelGap: 0.03
+--- !u!4 &976250311
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 976250309}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1810535472}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &976250312
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 976250309}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: c192421dcbcb61246b0ea1a97cbe36bd, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::BrainVolume.IipSlidePanel
+  timeline: {fileID: 976250310}

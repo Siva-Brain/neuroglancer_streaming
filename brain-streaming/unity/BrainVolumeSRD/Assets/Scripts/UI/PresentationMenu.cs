@@ -42,7 +42,22 @@ namespace BrainVolume
             [Tooltip("Small line under the label.")]
             public string caption;
             public NeuronalLossSequence timeline;
+            [Tooltip("Stop at the end and hold there (else the version loops, like V1-V4).")]
+            public bool holdAtEnd;
         }
+
+        [Header("V5 (built at play time)")]
+        [Tooltip("Add V5 to the menu at play time: a copy of version v5CopyFrom's timeline (its start pose and timings) " +
+                 "that turns the brain to the left sagittal view, slices until the cut face is the IIP slide's " +
+                 "section (v5Section), then a square comes out of the cut face and zooms into the IIP slide down to " +
+                 "single cells (IipSlidePanel), then goes back to the start pose and loops, like V1-V4. No neuronal-loss block, no split.")]
+        public bool addV5 = true;
+        public string v5Label = "V5";
+        public string v5Caption = "IIP Slide";
+        [Tooltip("Version (0 = V1) whose timeline settings V5 starts from.")]
+        public int v5CopyFrom = 1;
+        [Tooltip("Section V5 cuts to (L4 index along z; 150 = the IIP slide SL_354).")]
+        public int v5Section = 150;
 
         public Version[] versions = new Version[0];
         [Tooltip("Version shown at the start (0 = V1). -1 = only the brain, still, until a version is selected.")]
@@ -140,12 +155,13 @@ namespace BrainVolume
         // Awake: before the timelines' Start, so the ones not selected never prepare or move the brain.
         void Awake()
         {
+            if (addV5) AddV5();
             startIndex = Mathf.Clamp(startIndex, -1, versions.Length - 1);
             for (int i = 0; i < versions.Length; i++)
                 if (versions[i].timeline != null)
                 {
                     versions[i].timeline.transportBar = false;   // one shared seek bar (below)
-                    versions[i].timeline.loop = true;
+                    versions[i].timeline.loop = !versions[i].holdAtEnd;
                     if (i != startIndex) versions[i].timeline.SetStandby(true);
                 }
             _transport = FindFirstObjectByType<TimelineTransportUI>();
@@ -168,6 +184,54 @@ namespace BrainVolume
             }
             if (startIndex >= 0) Select(startIndex);
             else _transport.SetTimeline(null);
+        }
+
+        // V5: a new timeline with version v5CopyFrom's settings (copied before its Start, so it prepares as V5),
+        // then only Brain -> Rotate (left sagittal) -> Slice to v5Section, then back to the start pose and loop, like V1-V4.
+        void AddV5()
+        {
+            foreach (var v in versions) if (v.label == v5Label) return;   // already in the scene
+            if (v5CopyFrom < 0 || v5CopyFrom >= versions.Length || versions[v5CopyFrom].timeline == null)
+            {
+                Debug.LogWarning($"[Menu] V5: no version {v5CopyFrom + 1} to copy the timeline settings from.");
+                return;
+            }
+            var src = versions[v5CopyFrom].timeline;
+            var go = new GameObject("Timeline V5");
+            go.transform.SetParent(src.transform.parent, false);
+            var t = go.AddComponent<NeuronalLossSequence>();
+            JsonUtility.FromJsonOverwrite(JsonUtility.ToJson(src), t);
+            ConfigureV5(t, v5Section);
+            // after the slice: the square that comes out of the cut face and zooms into the IIP slide (sets the hold)
+            go.AddComponent<IipSlidePanel>().Init(t);
+            AddVersion(new Version { label = v5Label, caption = v5Caption, timeline = t, holdAtEnd = false });
+            Debug.Log($"[Menu] V5 added at play time from '{src.name}' (Tools > Presentation > Create V5 Timeline puts it in the scene).");
+        }
+
+        /// <summary>V5's timeline settings on top of a copy of another version's: only Brain -> Rotate (left
+        /// sagittal) -> Slice to `section`, then (after the IIP square) back to the start pose like V1-V4; no neuronal-loss block, split,
+        /// slice-back or final turn.
+        /// (Also used by the editor command that puts V5 in the scene.)</summary>
+        public static void ConfigureV5(NeuronalLossSequence t, int section)
+        {
+            t.showNeuronalLoss = false;
+            t.splitVolume = null;
+            t.splitThird = null;
+            t.sliceBack = false;
+            t.recede = 0f;
+            t.returnToStart = true;
+            t.finalTurnSeconds = 0f;
+            t.slicing = true;
+            t.cutToSection = section;
+            t.useCustomCardPose = false;
+            t.controlsMoveBlock = false;   // no block: the mouse / keys keep moving the brain
+        }
+
+        /// <summary>Append a version to the menu (before Start builds the bar).</summary>
+        public void AddVersion(Version v)
+        {
+            var list = new System.Collections.Generic.List<Version>(versions) { v };
+            versions = list.ToArray();
         }
 
         /// <summary>Show version i (0 = V1) from 0:00. Selecting the version already shown deselects it (ShowBrainOnly).</summary>

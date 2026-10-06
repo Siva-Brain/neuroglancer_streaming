@@ -640,6 +640,9 @@ namespace BrainVolume.EditorTools
         {
             SceneBuilds.AlwaysInclude("Brain/GlassSlide");   // LeapSliceSlide (added at runtime)
             SceneBuilds.AlwaysInclude("Brain/Lens");         // LeapLens (added at runtime)
+            SceneBuilds.AlwaysInclude("Brain/OverlayText");  // LeapLens coordinates
+            SceneBuilds.AlwaysInclude("Brain/BrickMask");    // BrickMaskOverlay (vessels)
+            SceneBuilds.AlwaysInclude("Brain/SlideSection"); // IipSectionOverlay (the IIP slide on the cut face)
             SceneBuilds.AlwaysInclude("Brain/OverlayCard");  // CardOverlay (the timelines' label cards)
         }
     }

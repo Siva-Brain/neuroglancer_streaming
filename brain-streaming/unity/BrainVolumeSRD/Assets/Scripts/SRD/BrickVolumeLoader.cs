@@ -69,9 +69,31 @@ namespace BrainVolume.SRD
         [Range(0f, 3f)] public float maskGrowMm = 0.3f;
 
         Texture3D _mask;
+        byte[] _maskData;                          // the mask on the CPU too (RaycastTissue), x fastest, then y, z
+        int _maskW, _maskH, _maskD;
 
         public int BrickCount => _bricks.Count;
         public bool Loaded => _bricks.Count > 0;
+
+        [Header("Overlays (bricked mask volumes in this brain's space, e.g. vessels)")]
+        [Tooltip("Datasets under the same folder drawn inside this brain (BrickMaskOverlay); missing ones are skipped. " +
+                 "Empty = none (off for now; add \"hb02_vessels\" for the vessels).")]
+        public string[] overlayDatasets = new string[0];
+        [Tooltip("Overlay level to load (hb02_vessels: L0 = 0.2 mm, 652 MB; L1 = 0.4 mm, 82 MB; L2 = 0.8 mm; L3 = 1.6 mm).")]
+        public int overlayLevel = 1;
+        public bool overlaysVisible = true;
+        [Tooltip("ON = drawn over the brain (seen through it). OFF = drawn first, so the brain's tissue covers them.")]
+        public bool overlaysOverBrain = true;
+        [Tooltip("Overlay colour; alpha = overall opacity. rgb (0,0,0) = the dataset's own tint.")]
+        public Color overlayColor = new Color(0f, 0f, 0f, 1f);
+        [Tooltip("Opacity per voxel step inside the mask (higher = more solid surfaces).")]
+        [Range(0.05f, 1f)] public float overlayDensity = 0.6f;
+        [Tooltip("Ray-march steps per voxel of the overlay (1 = every voxel; lower = faster, may miss thin vessels).")]
+        [Range(0.25f, 2f)] public float overlayStepsPerVoxel = 1f;
+        [Range(0f, 1f)] public float overlayShading = 0.8f;
+
+        readonly List<BrickMaskOverlay> _overlays = new List<BrickMaskOverlay>();
+        public IReadOnlyList<BrickMaskOverlay> Overlays => _overlays;
 
         [Header("Slicing (driven by a timeline, e.g. NeuronalLossSequence)")]
         [Tooltip("How much of the volume is cut away along z (sections), 0 = none, 1 = all.")]
@@ -110,6 +132,10 @@ namespace BrainVolume.SRD
 
         readonly List<Brick> _bricks = new List<Brick>();
         Vector3 _volMm = Vector3.one;               // whole-volume extent (mm), x y z
+        Vector3 _voxMm = Vector3.zero;             // the loaded level's voxel size (mm), x y z
+        /// <summary>Whole-volume extent (mm) and the loaded level's voxel size (mm; zero = unknown), x y z.</summary>
+        public Vector3 VolumeMm => _volMm;
+        public Vector3 VoxelMm => _voxMm;
         Mesh _cube;
 
         void Start()
@@ -160,6 +186,7 @@ namespace BrainVolume.SRD
 
             float[] ext = lvl.extent_mm != null && lvl.extent_mm.Length == 3 ? lvl.extent_mm : idx.world_extent_mm;
             if (ext != null && ext.Length == 3) _volMm = new Vector3(ext[0], ext[1], ext[2]);
+            if (lvl.voxel_mm != null && lvl.voxel_mm.Length == 3) _voxMm = new Vector3(lvl.voxel_mm[0], lvl.voxel_mm[1], lvl.voxel_mm[2]);
 
             int ok = 0;
             foreach (var b in lvl.bricks)
@@ -171,6 +198,13 @@ namespace BrainVolume.SRD
                       $"unitsPerMm={unitsPerMm}.");
             if (useTissueMask) BuildMask();
             IndexLensLevels(dir, idx);
+            if (overlayDatasets != null)
+                foreach (var name in overlayDatasets)
+                {
+                    if (string.IsNullOrEmpty(name) || name == datasetName) continue;
+                    var o = BrickMaskOverlay.Load(folder, name, overlayLevel, unitsPerMm);
+                    if (o != null) _overlays.Add(o);
+                }
         }
 
         [System.Serializable] class RawMeta { public int width, height, depth, channels; public string format; public float[] voxelSizeMM, sizeMM; }
@@ -256,6 +290,7 @@ namespace BrainVolume.SRD
                 name = "BrickTissueMask", wrapMode = TextureWrapMode.Clamp, filterMode = FilterMode.Bilinear,
             };
             _mask.SetPixelData(mask, 0);
+            _maskData = mask; _maskW = w; _maskH = h; _maskD = d;   // kept for picking (RaycastTissue)
             _mask.Apply(false, true);
             Debug.Log($"[Bricks] Tissue mask from {maskSource} ({w}x{h}x{d}): seam filter cleared {removed:N0} voxels, " +
                       $"grown {maskGrowMm} mm, {sw.ElapsedMilliseconds} ms.");
@@ -350,6 +385,7 @@ namespace BrainVolume.SRD
             // the cut, in whole-volume unit coords (kept part along z)
             float cut = Mathf.Clamp(slicePosition, 0f, 0.999f);
             float keepLo = sliceFromHighZ ? 0f : cut, keepHi = sliceFromHighZ ? 1f - cut : 1f;
+            if (!overlaysOverBrain) DrawOverlays(cam, l2w, keepLo, keepHi);
 
             foreach (var brk in draw)
             {
@@ -368,7 +404,63 @@ namespace BrainVolume.SRD
                 material.SetPass(0);
                 Graphics.DrawMeshNow(_cube, l2w * brk.local);
             }
+            if (overlaysOverBrain) DrawOverlays(cam, l2w, keepLo, keepHi);
             Drawn?.Invoke(cam);
+        }
+
+        // the mask overlays (vessels), cut like the brain: keepLo..keepHi = the kept part along the volume's z
+        void DrawOverlays(Camera cam, Matrix4x4 l2w, float keepLo, float keepHi)
+        {
+            if (!overlaysVisible || _overlays.Count == 0) return;
+            float z0 = -0.5f * _volMm.z * unitsPerMm, zl = _volMm.z * unitsPerMm;   // volume z in local units
+            var keep = new Vector2(z0 + keepLo * zl, z0 + keepHi * zl);
+            if (keepLo <= 0f) keep.x = float.NegativeInfinity;   // uncut ends: the overlay may reach past the brain's box
+            if (keepHi >= 1f) keep.y = float.PositiveInfinity;
+            foreach (var o in _overlays)
+            {
+                Color c = overlayColor.r + overlayColor.g + overlayColor.b > 0f ? overlayColor : o.Tint;
+                c.a = overlayColor.a;
+                o.Draw(cam, l2w, keep, c, overlayDensity, overlayStepsPerVoxel, overlayShading);
+            }
+        }
+
+        // ------------------------------------------------------------------ picking
+
+        /// <summary>The first tissue a world ray meets in the part of the brain that is shown (the cut part
+        /// left out): the outer surface, or the cut face. Uses the tissue mask (useTissueMask); without one, the
+        /// shown box's face. false = the ray misses the brain.</summary>
+        public bool RaycastTissue(Ray ray, out Vector3 hit)
+        {
+            hit = default;
+            if (!Loaded) return false;
+            Matrix4x4 m = UnitCubeToWorld, inv = m.inverse;
+            Vector3 o = inv.MultiplyPoint(ray.origin), d = inv.MultiplyVector(ray.direction);   // t is the world ray's
+
+            // the shown box: the whole unit cube minus the cut along z
+            float cut = Mathf.Clamp(slicePosition, 0f, 0.999f);
+            Vector3 lo = new Vector3(0f, 0f, sliceFromHighZ ? 0f : cut), hi = new Vector3(1f, 1f, sliceFromHighZ ? 1f - cut : 1f);
+            float t0 = 0f, t1 = float.MaxValue;
+            for (int a = 0; a < 3; a++)
+            {
+                if (Mathf.Abs(d[a]) < 1e-12f) { if (o[a] < lo[a] || o[a] > hi[a]) return false; continue; }
+                float ta = (lo[a] - o[a]) / d[a], tb = (hi[a] - o[a]) / d[a];
+                if (ta > tb) { float s = ta; ta = tb; tb = s; }
+                t0 = Mathf.Max(t0, ta); t1 = Mathf.Min(t1, tb);
+                if (t0 > t1) return false;
+            }
+            if (_maskData == null) { hit = ray.GetPoint(t0); return true; }
+
+            // march the mask in half-voxel steps; the first tissue voxel is the hit
+            float step = 0.5f / Mathf.Max(_maskW, Mathf.Max(_maskH, _maskD)) / Mathf.Max(1e-12f, d.magnitude);
+            for (float t = t0; t <= t1; t += step)
+            {
+                Vector3 p = o + d * t;
+                int x = Mathf.Clamp((int)(p.x * _maskW), 0, _maskW - 1);
+                int y = Mathf.Clamp((int)(p.y * _maskH), 0, _maskH - 1);
+                int z = Mathf.Clamp((int)(p.z * _maskD), 0, _maskD - 1);
+                if (_maskData[x + (long)_maskW * (y + (long)_maskH * z)] >= 128) { hit = ray.GetPoint(t); return true; }
+            }
+            return false;
         }
 
         // ------------------------------------------------------------------ finer levels for the lens (LeapLens)
@@ -520,6 +612,8 @@ namespace BrainVolume.SRD
 
         void OnDestroy()
         {
+            foreach (var o in _overlays) o.Dispose();
+            _overlays.Clear();
             foreach (var r in _lensResident.Values) if (r.brick.tex != null) Destroy(r.brick.tex);
             _lensResident.Clear();
             foreach (var b in _bricks) if (b.tex != null) Destroy(b.tex);

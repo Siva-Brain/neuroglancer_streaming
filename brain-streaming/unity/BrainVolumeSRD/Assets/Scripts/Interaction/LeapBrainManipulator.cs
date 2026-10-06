@@ -17,8 +17,8 @@ namespace BrainVolume
     ///   left or right); moving that hand moves the slide, which cuts the brain (LeapSliceSlide). That hand
     ///   doesn't grab; its pinch stops the slide, the next pinch lets it move again. The other hand grabs to turn
     ///   the brain meanwhile (two-hand gestures are off). Slice off keeps the cut.
-    ///   Lens on (menu): the same, with a magnifying glass (LeapLens) in that hand instead: it shows the brain
-    ///   behind it zoomed in; a pinch with that hand pins the lens in place, the next pinch takes it back.
+    ///   Lens on (menu): the same, with a crosshair (LeapLens) in that hand instead (a box shows the brain
+    ///   around it); a pinch with that hand stops the crosshair, the next pinch lets it move again.
     ///   Slice and Lens are one-hand tools: turning one on turns the other off.
     ///
     /// The menu bar is touched with a fingertip (LeapMenuInteractor). A hand at the menu (its zone) never starts a
@@ -241,12 +241,12 @@ namespace BrainVolume
             // glass slide / lens: attached to one hand while on, which then only moves it (the other hand grabs)
             int tool = slide != null && slide.Active ? 1 : lens != null && lens.Active ? 2 : 0;
             UpdateSlideHand(tool);
-            // the tool hand's pinch (on its start only): the lens is pinned where it is / taken back, the slide
+            // the tool hand's pinch (on its start only): the lens crosshair stops / moves again, the slide
             // stops / moves again
             bool toolPinch = tool != 0 && (_l.sliding && _l.pinching || _r.sliding && _r.pinching);
             if (toolPinch && !_toolPinchWas)
             {
-                if (tool == 2) lens.TogglePinned();
+                if (tool == 2) lens.ToggleStopped();
                 else slide.TogglePaused();
             }
             _toolPinchWas = toolPinch;
@@ -388,8 +388,8 @@ namespace BrainVolume
             _slidePrev = h.point;
         }
 
-        // The lens follows its hand (absolutely: it sits just past the fingertips). It hides while that hand is at
-        // the menu, so it never covers the buttons, and while the hand is not tracked.
+        // The lens crosshair follows its hand (just past the fingertips). It rests while that hand is at
+        // the menu and while the hand is not tracked.
         void DriveLens()
         {
             if (lens == null || !lens.Active) return;
@@ -482,7 +482,8 @@ namespace BrainVolume
             return Vector3.Distance(m.MultiplyPoint(c), p) <= reach;
         }
 
-        void PauseTimelines()
+        /// <summary>Pause the playing timeline (it would pull the cut back while the slide is moved).</summary>
+        public void PauseTimelines()
         {
             if (_timelines == null) return;
             foreach (var t in _timelines)
