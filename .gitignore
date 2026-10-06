@@ -47,6 +47,9 @@ brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Fused/*.raw.meta
 **/Assets/_Recovery/
 **/Assets/_Recovery.meta
 brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/Bricks/hb02_fused/
+# IIP slide tiles (IipSectionOverlay local copy, Brain > IIP > Pre-download slide tiles)
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/IIP/
+brain-streaming/unity/BrainVolumeSRD/Assets/StreamingAssets/IIP.meta
 brain-streaming/unity/BrainVolumeSRD/.vs
 # showcase videos (BrainShowcase F10)
 brain-streaming/unity/BrainVolumeSRD/Recordings/

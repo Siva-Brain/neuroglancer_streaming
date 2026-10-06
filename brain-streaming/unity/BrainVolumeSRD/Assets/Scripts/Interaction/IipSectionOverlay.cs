@@ -16,8 +16,9 @@ namespace BrainVolume
     ///   is drawn on the cut face (its tissue only, the white background left out), over the brain. It builds up as the
     ///   cut face nears the section (revealSections: a circle growing from the middle, fading in) and goes the same way.
     /// * LeapLens asks for the slide around a point (ComposeAround): the IIP tiles of the level that fits the box
-    ///   are fetched (a few at a time, cached) and drawn into the box's texture over the thumbnail, which is
-    ///   always there, so the box is never empty while tiles load.
+    ///   are fetched (a few at a time, cached) and drawn into a texture over the thumbnail, which is always there,
+    ///   so it is never empty while tiles load. That texture is drawn on the cut face for the lens camera only
+    ///   (SetLensDetail), like the slide itself: turning with the brain, its white background left out.
     /// Key I (with the Lens on, or always with keyJump): cut the brain to the slide's section.
     /// </summary>
     public sealed class IipSectionOverlay : MonoBehaviour
@@ -57,7 +58,13 @@ namespace BrainVolume
 
         [Header("Tiles")]
         public int maxConcurrent = 4;
-        public int cacheTiles = 32;
+        [Tooltip("Tiles kept in memory (~16 MB each); the least recently seen go first.")]
+        public int cacheTiles = 128;
+        [Tooltip("Local copy: tiles are read from StreamingAssets/<localFolder>/<slide>/<level>/<index>.jpg when there " +
+                 "(Brain > IIP > Pre-download slide tiles, or saved on first view), else fetched and saved there " +
+                 "(persistentDataPath if StreamingAssets is not writable).")]
+        public bool diskCache = true;
+        public string localFolder = "IIP";
 
         /// <summary>Is the cut face at the slide's section (the slide is shown there)?</summary>
         public bool OnCutFace { get; private set; }
@@ -75,6 +82,12 @@ namespace BrainVolume
         int _active;
         float _faceUnitZ;
         float _shown, _shownVel;   // 0..1: how far the slide is revealed on the cut face
+        Material _detailMat;       // the lens' finer tiles on the cut face (SetLensDetail)
+        Mesh _detail;
+        Texture _detailTex;
+        Vector2 _detailCentre;
+        float _detailSide;
+        int _detailFrame = -1;
 
         Texture2D Thumb => _tiles.TryGetValue(Key(0, 0), out var t) ? t : null;
 
@@ -84,9 +97,11 @@ namespace BrainVolume
             _lens = lens;
             var sh = Shader.Find("Brain/SlideSection");
             if (sh == null) Debug.LogWarning("[IIP] Brain/SlideSection not found (Always Included Shaders?): no slide on the cut face.");
-            else _planeMat = new Material(sh);
+            else { _planeMat = new Material(sh); _detailMat = new Material(sh); }   // the detail: no reveal circle (default)
             _plane = new Mesh { name = "IipSlide" };
             _plane.MarkDynamic();
+            _detail = new Mesh { name = "IipLensDetail" };
+            _detail.MarkDynamic();
             Request(0, 0);   // the thumbnail: always kept
             _vol.Drawn += Draw;
         }
@@ -96,6 +111,18 @@ namespace BrainVolume
         /// <summary>Volume unit (x, y) on the section -> the slide's full-resolution pixel (1 um/px).</summary>
         public Vector2 UnitToFullPx(Vector2 unit) => ThumbPx(new Vector2(unit.x * l4Size.x, unit.y * l4Size.y)) * FullPerThumb;
         float FullPerThumb => Mathf.Pow(2f, levels - 1);
+
+        /// <summary>The slide's full-resolution pixel -> volume unit (x, y) on the section (the fit, inverted).</summary>
+        public Vector2 FullPxToUnit(Vector2 full)
+        {
+            float a = -angleDeg * Mathf.Deg2Rad, c = Mathf.Cos(a), s = Mathf.Sin(a);
+            Vector2 d = (full / FullPerThumb - offset) / Mathf.Max(1e-9f, scale);
+            Vector2 v = centre + new Vector2(c * d.x - s * d.y, s * d.x + c * d.y);
+            return new Vector2(v.x / l4Size.x, v.y / l4Size.y);
+        }
+
+        /// <summary>The cut face (volume unit z) the slide is drawn on.</summary>
+        public float FaceUnitZ => _faceUnitZ;
 
         Vector2 ThumbPx(Vector2 v)
         {
@@ -110,8 +137,47 @@ namespace BrainVolume
         int LevelSize(int level) => baseSize << level;
         int Cols(int level) => (LevelSize(level) + tileSize - 1) / tileSize;
 
-        string Url(int level, int index) =>
+        public string Url(int level, int index) =>
             $"{server}?FIF={imagePath.Replace("[", "%5B").Replace("]", "%5D")}&JTL={level},{index}";
+
+        /// <summary>The slide's local tile folder under `root` (StreamingAssets or persistentDataPath).</summary>
+        public string LocalDir(string root) =>
+            System.IO.Path.Combine(root, localFolder, System.IO.Path.GetFileNameWithoutExtension(imagePath));
+        public static string TileFile(string dir, int level, int index) =>
+            System.IO.Path.Combine(dir, level.ToString(), index + ".jpg");
+
+        // the tile's local copy (shipped in StreamingAssets, or saved earlier), null = none
+        string LocalTile(int level, int index)
+        {
+            if (!diskCache) return null;
+            string a = TileFile(LocalDir(Application.streamingAssetsPath), level, index);
+            if (System.IO.File.Exists(a)) return a;
+            string b = TileFile(LocalDir(Application.persistentDataPath), level, index);
+            return System.IO.File.Exists(b) ? b : null;
+        }
+
+        // keep a fetched tile (off the main thread): StreamingAssets, else persistentDataPath
+        void SaveTile(int level, int index, byte[] bytes)
+        {
+            if (!diskCache || bytes == null || bytes.Length == 0) return;
+            string[] dirs = { LocalDir(Application.streamingAssetsPath), LocalDir(Application.persistentDataPath) };
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                foreach (var dir in dirs)
+                {
+                    try
+                    {
+                        string path = TileFile(dir, level, index), tmp = path + ".part";
+                        System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path));
+                        System.IO.File.WriteAllBytes(tmp, bytes);
+                        if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                        System.IO.File.Move(tmp, path);
+                        return;
+                    }
+                    catch (System.Exception) { }   // not writable: the next folder
+                }
+            });
+        }
 
         void Request(int level, int index)
         {
@@ -140,7 +206,9 @@ namespace BrainVolume
         {
             int level = (int)(k >> 32), index = (int)(k & 0xffffffff);
             _loading.Add(k); _active++;
-            using (var req = UnityWebRequestTexture.GetTexture(Url(level, index), true))
+            string local = LocalTile(level, index);
+            string url = local != null ? new System.Uri(local).AbsoluteUri : Url(level, index);
+            using (var req = UnityWebRequestTexture.GetTexture(url, true))
             {
                 yield return req.SendWebRequest();
                 _loading.Remove(k); _active--;
@@ -150,6 +218,7 @@ namespace BrainVolume
                     Debug.LogWarning($"[IIP] tile {level},{index}: {req.error}");
                     yield break;
                 }
+                if (local == null) SaveTile(level, index, req.downloadHandler.data);
                 var tex = DownloadHandlerTexture.GetContent(req);
                 tex.wrapMode = TextureWrapMode.Clamp;
                 tex.filterMode = FilterMode.Bilinear;
@@ -285,6 +354,33 @@ namespace BrainVolume
             _planeMat.SetFloat("_Alpha", opacity * Mathf.Clamp01(_shown * 1.6f));
             _planeMat.SetPass(0);
             Graphics.DrawMeshNow(_plane, Matrix4x4.identity);
+
+            // the lens' finer tiles over it, for the lens camera only (SetLensDetail this frame)
+            if (_detailTex != null && _detailFrame == Time.frameCount && LeapLens.IsLensCamera(cam) && _detailMat != null)
+            {
+                Vector2 lo = _detailCentre - 0.5f * new Vector2(_detailSide, _detailSide);
+                var full = new[] { lo, lo + new Vector2(_detailSide, 0f), lo + new Vector2(_detailSide, _detailSide), lo + new Vector2(0f, _detailSide) };
+                for (int i = 0; i < 4; i++)
+                {
+                    Vector2 u = FullPxToUnit(full[i]);
+                    v[i] = m.MultiplyPoint(new Vector3(u.x, u.y, _faceUnitZ));
+                    uv[i] = new Vector2((full[i].x - lo.x) / _detailSide, 1f - (full[i].y - lo.y) / _detailSide);   // rows run bottom-up
+                }
+                _detail.Clear();
+                _detail.vertices = v; _detail.uv = uv; _detail.triangles = new[] { 0, 1, 2, 0, 2, 3 };
+                _detailMat.mainTexture = _detailTex;
+                _detailMat.SetFloat("_Alpha", opacity * Mathf.Clamp01(_shown * 1.6f));
+                _detailMat.SetPass(0);
+                Graphics.DrawMeshNow(_detail, Matrix4x4.identity);
+            }
+        }
+
+        /// <summary>LeapLens, before rendering its camera: `tex` holds the slide's square `sideFull` px wide around
+        /// full px `centreFull` (ComposeAround); this frame the lens camera sees it on the cut face over the thumbnail.</summary>
+        public void SetLensDetail(Texture tex, Vector2 centreFull, float sideFull)
+        {
+            _detailTex = tex; _detailCentre = centreFull; _detailSide = sideFull;
+            _detailFrame = Time.frameCount;
         }
 
         void OnDestroy()
@@ -294,6 +390,8 @@ namespace BrainVolume
             _tiles.Clear();
             if (_planeMat != null) Destroy(_planeMat);
             if (_plane != null) Destroy(_plane);
+            if (_detailMat != null) Destroy(_detailMat);
+            if (_detail != null) Destroy(_detail);
         }
     }
 }

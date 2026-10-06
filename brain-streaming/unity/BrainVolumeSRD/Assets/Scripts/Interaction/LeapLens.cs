@@ -111,7 +111,7 @@ namespace BrainVolume
         string[] _lines = new string[0];
         Vector3 _stoppedUnit;    // where the crosshair was stopped, in the volume's unit cube
         IipSectionOverlay _iip;  // the IIP slide fitted into the brain
-        RenderTexture _slideRt;  // the box's view of the slide
+        RenderTexture _slideRt;  // the slide around what the box sees (square), drawn on the cut face
         bool _onSlide, _slideLoading;
         int _slideLevel = -1;
         Vector2 _slidePx;
@@ -329,29 +329,6 @@ namespace BrainVolume
             EnsureCamera();
             float boxDist = Mathf.Max(1e-4f, Vector3.Distance(_eye, _boxCentre));
 
-            // on the IIP slide's section (the brain cut there, the crosshair on the cut face): the slide's tiles
-            _onSlide = false;
-            if (_iip != null && _iip.OnCutFace && OnBrain && _loader != null
-                && Mathf.Abs(Unit.z - _iip.SectionUnitZ) * _iip.sectionsInVolume <= _iip.sectionTolerance + 1f)
-            {
-                // the region the box covers at the crosshair (1x = the size it has around the box), / zoom, in
-                // slide px (1 um/px, times the fit's scale: the slide is a little bigger than the volume)
-                float regionWorld = 2f * _boxRight.magnitude * toPoint.magnitude / boxDist / Zoom;
-                float mmPerWorld = _loader.VolumeMm.x / Mathf.Max(1e-9f, ((Vector3)_vol.UnitCubeToWorld.GetColumn(0)).magnitude);
-                float widthFull = regionWorld * mmPerWorld * 1000f * _iip.scale;
-                _slideLevel = _iip.ComposeAround(_slideRt, _iip.UnitToFullPx(new Vector2(Unit.x, Unit.y)), widthFull, out _slideLoading);
-                _slidePx = _iip.UnitToFullPx(new Vector2(Unit.x, Unit.y));
-                _onSlide = true;
-                _rendered = true;
-                AddSlideLine();
-                BuildText();
-                return;
-            }
-
-            // each x2 of zoom asks for the next finer level (down to the finest on disk); the loader streams its
-            // bricks in for this camera and shows a coarser one until they are loaded
-            if (_loader != null) _loader.LensLevel = LensLevelForZoom();
-
             // the box's own angular size: the brain shows at the size it has around the box (1x), / zoom
             _lensCam.transform.SetPositionAndRotation(_eye, Quaternion.LookRotation(toPoint, _eyeUp));
             _lensCam.fieldOfView = 2f * Mathf.Atan(_boxUp.magnitude / boxDist / Zoom) * Mathf.Rad2Deg;
@@ -359,9 +336,56 @@ namespace BrainVolume
             _lensCam.nearClipPlane = Mathf.Max(1e-4f, head.nearClipPlane);
             _lensCam.farClipPlane = Mathf.Max(head.farClipPlane, toPoint.magnitude * 4f);
             _lensCam.backgroundColor = background;
+
+            // on the IIP slide's section (the brain cut there, the crosshair on the cut face): the slide's finer
+            // tiles for the part of the cut face the box sees, drawn ON the cut face for this camera
+            // (IipSectionOverlay), so the box keeps its 3D view: the slide turns with the brain, never mirrored,
+            // and its white background is left out like on the cut face
+            _onSlide = false;
+            if (_iip != null && _iip.OnCutFace && OnBrain
+                && Mathf.Abs(Unit.z - _iip.SectionUnitZ) * _iip.sectionsInVolume <= _iip.sectionTolerance + 1f
+                && SlideRegion(out Vector2 centreFull, out float sideFull))
+            {
+                _slideLevel = _iip.ComposeAround(_slideRt, centreFull, sideFull, out _slideLoading);
+                _iip.SetLensDetail(_slideRt, centreFull, sideFull);
+                _slidePx = _iip.UnitToFullPx(new Vector2(Unit.x, Unit.y));
+                _onSlide = true;
+            }
+
+            // each x2 of zoom asks for the next finer level (down to the finest on disk); the loader streams its
+            // bricks in for this camera and shows a coarser one until they are loaded
+            if (_loader != null) _loader.LensLevel = LensLevelForZoom();
+
             _lensCam.Render();
             _rendered = true;
+            if (_onSlide) AddSlideLine();
             BuildText();
+        }
+
+        static readonly Vector2[] ViewCorners = { new Vector2(0, 0), new Vector2(1, 0), new Vector2(1, 1), new Vector2(0, 1) };
+
+        // The square of the slide (full px, 1 um/px) around what the box sees of the cut face: the box's corner rays
+        // met with the cut face, their bounding square. False when a corner ray misses the cut face's plane.
+        bool SlideRegion(out Vector2 centreFull, out float sideFull)
+        {
+            centreFull = default; sideFull = 0f;
+            Matrix4x4 toUnit = _vol.UnitCubeToWorld.inverse;
+            float z = _iip.FaceUnitZ;
+            Vector2 lo = new Vector2(float.MaxValue, float.MaxValue), hi = -lo;
+            foreach (var c in ViewCorners)
+            {
+                Ray r = _lensCam.ViewportPointToRay(new Vector3(c.x, c.y, 0f));
+                Vector3 o = toUnit.MultiplyPoint(r.origin), d = toUnit.MultiplyVector(r.direction);
+                if (Mathf.Abs(d.z) < 1e-9f) return false;
+                float t = (z - o.z) / d.z;
+                if (t <= 0f) return false;
+                Vector3 p = o + d * t;
+                Vector2 f = _iip.UnitToFullPx(new Vector2(p.x, p.y));
+                lo = Vector2.Min(lo, f); hi = Vector2.Max(hi, f);
+            }
+            centreFull = 0.5f * (lo + hi);
+            sideFull = Mathf.Max(hi.x - lo.x, hi.y - lo.y);
+            return sideFull > 0f;
         }
 
         // the slide line of the readout: which slide, its pyramid level, the zoom and the pixel at the crosshair
@@ -452,7 +476,7 @@ namespace BrainVolume
                 _rt = new RenderTexture(w, h, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default) { name = "LensView" };
                 _rt.Create();
                 if (_slideRt != null) { _slideRt.Release(); Destroy(_slideRt); }
-                _slideRt = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default) { name = "LensSlide" };
+                _slideRt = new RenderTexture(w, w, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default) { name = "LensSlide" };
                 _slideRt.Create();
             }
             _lensCam.targetTexture = _rt;
@@ -468,7 +492,7 @@ namespace BrainVolume
             // the box: the view, a rounded border, a small mark at its centre (the crosshair's spot)
             if (_rendered)
             {
-                _boxMat.SetTexture("_MainTex", _onSlide ? _slideRt : _rt);
+                _boxMat.SetTexture("_MainTex", _rt);
                 _boxMat.SetColor("_BorderColor", borderColor);
                 _boxMat.SetColor("_MarkColor", mark);
                 _boxMat.SetFloat("_Aspect", _boxRight.magnitude / Mathf.Max(1e-6f, _boxUp.magnitude));
